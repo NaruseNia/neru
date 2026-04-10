@@ -141,6 +141,20 @@ fn factorial(n) {
 
 neru は Zig ライブラリとしても利用可能。`@import("neru")` でインポートする。
 
+主要な型はバレルファイルから直接アクセスできる:
+
+```zig
+const neru = @import("neru");
+
+// 推奨: 直接アクセス
+const VM = neru.vm.VM;
+const Lexer = neru.compiler.Lexer;
+
+// 詳細なサブモジュールも利用可能
+const opcodes = neru.vm.opcodes;
+const token = neru.compiler.token;
+```
+
 ### コンパイラパイプライン
 
 ```zig
@@ -152,42 +166,42 @@ var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 defer arena.deinit();
 const allocator = arena.allocator();
 
-var diags = neru.compiler.diagnostic.DiagnosticList.init(allocator);
-var nodes = neru.compiler.ast.NodeStore.init(allocator);
+var diags = neru.compiler.DiagnosticList.init(allocator);
+var nodes = neru.compiler.NodeStore.init(allocator);
 
 // 2. レキサー + パーサー
 const source = "let x = 42\n";
-var lexer = neru.compiler.lexer.Lexer.init(source, &diags);
-var parser = neru.compiler.parser.Parser.init(allocator, &lexer, &nodes, &diags);
+var lexer = neru.compiler.Lexer.init(source, &diags);
+var parser = neru.compiler.Parser.init(allocator, &lexer, &nodes, &diags);
 const root = try parser.parseProgram();
 
 // 3. コードジェネレーション
-var compiler = neru.compiler.codegen.Compiler.init(allocator, &nodes, &diags);
+var compiler = neru.compiler.Compiler.init(allocator, &nodes, &diags);
 const module = try compiler.compile(root);
 
 // 4. VM 実行
-var vm = neru.vm.vm.VM.init(allocator);
+var vm = neru.vm.VM.init(allocator);
 vm.load(module);
 const result = try vm.execute();
 ```
 
 ### 主要な型
 
-#### `neru.compiler.lexer.Lexer`
+#### `neru.compiler.Lexer`
 
 ```zig
 fn init(source: []const u8, diagnostics: *DiagnosticList) Lexer
 fn next(self: *Lexer) Token
 ```
 
-#### `neru.compiler.parser.Parser`
+#### `neru.compiler.Parser`
 
 ```zig
 fn init(allocator, lexer: *Lexer, nodes: *NodeStore, diagnostics: *DiagnosticList) Parser
 fn parseProgram(self: *Parser) !NodeIndex
 ```
 
-#### `neru.compiler.codegen.Compiler`
+#### `neru.compiler.Compiler`
 
 ```zig
 fn init(allocator, nodes: *const NodeStore, diagnostics: *DiagnosticList) Compiler
@@ -195,14 +209,14 @@ fn compile(self: *Compiler, program_idx: NodeIndex) !CompiledModule
 fn deinit(self: *Compiler) void
 ```
 
-#### `neru.compiler.codegen.CompiledModule`
+#### `neru.compiler.CompiledModule`
 
 ```zig
 fn serialize(self: *const CompiledModule, writer: anytype) !void
 fn deserialize(data: []const u8, allocator) !CompiledModule
 ```
 
-#### `neru.vm.vm.VM`
+#### `neru.vm.VM`
 
 ```zig
 fn init(allocator) VM
@@ -212,7 +226,7 @@ fn currentSourceLine(self: *const VM) u32
 fn deinit(self: *VM) void
 ```
 
-#### `neru.vm.value.Value`
+#### `neru.vm.Value`
 
 ```zig
 const Value = union(enum) {
