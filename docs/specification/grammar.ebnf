@@ -1,0 +1,340 @@
+(* ============================================================ *)
+(* neru Language Grammar — EBNF                                 *)
+(* ============================================================ *)
+(* このファイルは neru スクリプト言語の形式文法を EBNF 記法で   *)
+(* 定義する。ISO/IEC 14977 準拠。                               *)
+(*                                                              *)
+(* 表記規則:                                                    *)
+(*   =   定義           |   選択                                *)
+(*   ,   連結           ;   定義の終端                          *)
+(*   []  省略可能       {}  0回以上の繰り返し                   *)
+(*   ()  グループ化     ""  終端記号（リテラル）                *)
+(*   (*  *)  コメント   -   除外                                *)
+(*   ?   特殊記法（正規表現等の補助記述に使用）                 *)
+(* ============================================================ *)
+
+
+(* ------------------------------------------------------------ *)
+(* 1. トップレベル構造                                          *)
+(* ------------------------------------------------------------ *)
+
+program = { line } , EOF ;
+
+line = newline
+     | comment
+     | scenario_line
+     | logic_line ;
+
+(* ファイル拡張子でシナリオモード/ロジックモードが確定する。         *)
+(*   .neru  → シナリオモード（インラインロジック @if, @call 等可）   *)
+(*   .nerul → ロジックモード（純粋なロジック記述のみ）               *)
+
+scenario_program = { scenario_line | newline | comment } , EOF ;
+logic_program    = { logic_line | newline | comment } , EOF ;
+
+
+(* ------------------------------------------------------------ *)
+(* 2. 字句構造 (Lexical Grammar)                                *)
+(* ------------------------------------------------------------ *)
+
+(* 2.1 文字セット *)
+letter        = "A" | "B" | (* ... *) "Z"
+              | "a" | "b" | (* ... *) "z" ;
+digit         = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+hex_digit     = digit | "A" | "B" | "C" | "D" | "E" | "F"
+              | "a" | "b" | "c" | "d" | "e" | "f" ;
+underscore    = "_" ;
+newline       = ? U+000A (LF) ? | ? U+000D U+000A (CRLF) ? ;
+whitespace    = " " | ? U+0009 (TAB) ? ;
+unicode_char  = ? any Unicode character except newline ? ;
+
+(* 2.2 識別子 *)
+identifier    = ( letter | underscore ) , { letter | digit | underscore } ;
+
+(* 2.3 予約語 *)
+keyword       = "let" | "fn" | "if" | "else" | "elif" | "for" | "while"
+              | "return" | "break" | "continue" | "goto"
+              | "true" | "false" | "null"
+              | "state" | "import" | "from" | "in" ;
+
+(* 2.4 リテラル *)
+int_literal   = [ "-" ] , decimal_int
+              | "0x" , hex_digit , { hex_digit }
+              | "0b" , ( "0" | "1" ) , { "0" | "1" } ;
+decimal_int   = digit , { digit } ;
+
+float_literal = [ "-" ] , digit , { digit } , "." , digit , { digit } ;
+
+string_literal = '"' , { string_char } , '"' ;
+string_char   = unicode_char - ( '"' | "\\" | newline )
+              | escape_seq ;
+escape_seq    = "\\" , ( '"' | "\\" | "n" | "r" | "t" | "0"
+              | "u" , "{" , hex_digit , { hex_digit } , "}" ) ;
+
+bool_literal  = "true" | "false" ;
+null_literal  = "null" ;
+
+literal       = int_literal
+              | float_literal
+              | string_literal
+              | bool_literal
+              | null_literal ;
+
+(* 2.5 コメント *)
+comment       = line_comment | block_comment ;
+line_comment  = "//" , { unicode_char } , newline ;
+block_comment = "/*" , { unicode_char | newline } , "*/" ;
+
+
+(* ------------------------------------------------------------ *)
+(* 3. シナリオ層文法 (Scenario Grammar)                         *)
+(* ------------------------------------------------------------ *)
+
+scenario_line = text_line
+              | directive
+              | label_def
+              | choice_block
+              | macro_def
+              | macro_call
+              | scenario_if
+              | import_decl ;
+
+(* 3.1 テキスト行 *)
+text_line     = text_segment , { text_segment } , newline ;
+text_segment  = plain_text | interpolation ;
+plain_text    = ? one or more unicode characters not starting with *)
+              (*   "@", "#", "//" and not containing "{" or "}" ? ;
+interpolation = "{" , expression , "}" ;
+
+(* 3.2 ディレクティブ（@命令） *)
+directive     = "@" , directive_name , [ directive_args ] , newline ;
+directive_name = identifier ;
+directive_args = { directive_arg } ;
+directive_arg  = positional_arg | option_arg ;
+positional_arg = string_literal | identifier | file_ref | expression ;
+option_arg     = "--" , identifier , [ option_value ] ;
+option_value   = string_literal | int_literal | float_literal | identifier ;
+
+file_ref       = ? file path characters ? , [ "#" , identifier ] ;
+
+(* 3.2.1 テキスト制御命令 *)
+speaker_dir   = "@speaker" , ( identifier | string_literal ) , newline ;
+narrator_dir  = "@narrator" , newline ;
+wait_dir      = "@wait" , int_literal , newline ;
+clear_dir     = "@clear" , newline ;
+
+(* 3.2.2 演出命令 *)
+bg_dir        = "@bg" , file_ref , { option_arg } , newline ;
+show_dir      = "@show" , identifier , [ identifier ] , { option_arg } , newline ;
+hide_dir      = "@hide" , identifier , { option_arg } , newline ;
+bgm_dir       = "@bgm" , file_ref , { option_arg } , newline ;
+bgm_stop_dir  = "@bgm_stop" , { option_arg } , newline ;
+se_dir        = "@se" , file_ref , { option_arg } , newline ;
+transition_dir = "@transition" , identifier , { option_arg } , newline ;
+
+(* 3.2.3 フロー制御命令 *)
+goto_dir      = "@goto" , identifier , newline ;
+jump_dir      = "@jump" , file_ref , newline ;
+call_dir      = "@call" , call_expression , newline ;
+eval_dir      = "@eval" , expression , newline ;
+
+(* 3.3 ラベル定義 *)
+label_def     = "#" , { whitespace } , identifier , newline ;
+
+(* 3.4 選択肢ブロック *)
+choice_block  = "#choice" , newline ,
+                choice_item , { choice_item } ;
+choice_item   = { whitespace } , "-" , { whitespace } ,
+                choice_text , { whitespace } ,
+                "->" , { whitespace } , identifier ,
+                [ choice_condition ] , newline ;
+choice_text   = string_literal
+              | "「" , { unicode_char - "」" } , "」" ;
+choice_condition = { whitespace } , "@if" , { whitespace } , expression ;
+
+(* 3.5 シナリオ内条件分岐 *)
+scenario_if   = "@if" , { whitespace } , expression , newline ,
+                { scenario_line } ,
+                { scenario_elif } ,
+                [ scenario_else ] ,
+                "@end" , newline ;
+scenario_elif = "@elif" , { whitespace } , expression , newline ,
+                { scenario_line } ;
+scenario_else = "@else" , newline ,
+                { scenario_line } ;
+
+(* 3.6 マクロ定義 *)
+macro_def     = "@macro" , { whitespace } , identifier ,
+                "(" , [ param_list ] , ")" , newline ,
+                { scenario_line } ,
+                "@end" , newline ;
+
+(* 3.7 マクロ呼び出し *)
+macro_call    = "@" , identifier , { { whitespace } , directive_arg } , newline ;
+
+(* 3.8 import 宣言 *)
+import_decl   = "@import" , { whitespace } ,
+                ( identifier | "*" ) ,
+                { whitespace } , "from" , { whitespace } ,
+                string_literal , newline ;
+
+
+(* ------------------------------------------------------------ *)
+(* 4. ロジック層文法 (Logic Grammar)                            *)
+(* ------------------------------------------------------------ *)
+
+logic_line    = statement ;
+
+(* 4.1 文 (Statements) *)
+statement     = let_stmt
+              | fn_decl
+              | if_stmt
+              | for_stmt
+              | while_stmt
+              | return_stmt
+              | break_stmt
+              | continue_stmt
+              | goto_stmt
+              | assign_stmt
+              | expr_stmt ;
+
+(* 4.1.1 変数宣言 *)
+let_stmt      = "let" , { whitespace } , identifier ,
+                { whitespace } , "=" , { whitespace } ,
+                expression , newline ;
+
+(* 4.1.2 関数宣言 *)
+fn_decl       = "fn" , { whitespace } , identifier ,
+                "(" , [ param_list ] , ")" ,
+                { whitespace } , block ;
+param_list    = identifier , { "," , { whitespace } , identifier } ;
+
+(* 4.1.3 条件分岐 *)
+if_stmt       = "if" , { whitespace } , expression ,
+                { whitespace } , block ,
+                { else_if_clause } ,
+                [ else_clause ] ;
+else_if_clause = { whitespace } , "else" , { whitespace } , "if" ,
+                 { whitespace } , expression ,
+                 { whitespace } , block ;
+else_clause   = { whitespace } , "else" , { whitespace } , block ;
+
+(* 4.1.4 for ループ *)
+for_stmt      = "for" , { whitespace } , identifier ,
+                { whitespace } , "in" , { whitespace } ,
+                ( range_expr | expression ) ,
+                { whitespace } , block ;
+range_expr    = expression , ".." , expression ;
+
+(* 4.1.5 while ループ *)
+while_stmt    = "while" , { whitespace } , expression ,
+                { whitespace } , block ;
+
+(* 4.1.6 return / break / continue / goto *)
+return_stmt   = "return" , [ { whitespace } , expression ] , newline ;
+break_stmt    = "break" , newline ;
+continue_stmt = "continue" , newline ;
+goto_stmt     = "goto" , { whitespace } , identifier , newline ;
+
+(* 4.1.7 代入文 *)
+assign_stmt   = assign_target , { whitespace } ,
+                assign_op , { whitespace } ,
+                expression , newline ;
+assign_target = identifier , { member_access | index_access } ;
+assign_op     = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+
+(* 4.1.8 式文 *)
+expr_stmt     = expression , newline ;
+
+(* 4.2 ブロック *)
+block         = "{" , { newline } ,
+                { statement , { newline } } ,
+                "}" ;
+
+
+(* ------------------------------------------------------------ *)
+(* 5. 式 (Expressions)                                          *)
+(* ------------------------------------------------------------ *)
+(* 優先度（低い順）:                                            *)
+(*   1. ||  (論理OR)                                            *)
+(*   2. &&  (論理AND)                                           *)
+(*   3. == !=  (等価比較)                                       *)
+(*   4. < > <= >=  (順序比較)                                   *)
+(*   5. + -  (加減算)                                           *)
+(*   6. * / %  (乗除算)                                         *)
+(*   7. ! -  (単項演算子)                                       *)
+(*   8. () . [] fn()  (後置演算子)                              *)
+(* ------------------------------------------------------------ *)
+
+expression    = or_expr ;
+
+or_expr       = and_expr , { "||" , and_expr } ;
+and_expr      = equality_expr , { "&&" , equality_expr } ;
+equality_expr = comparison_expr , { ( "==" | "!=" ) , comparison_expr } ;
+comparison_expr = additive_expr , { ( "<" | ">" | "<=" | ">=" ) , additive_expr } ;
+additive_expr = multiplicative_expr , { ( "+" | "-" ) , multiplicative_expr } ;
+multiplicative_expr = unary_expr , { ( "*" | "/" | "%" ) , unary_expr } ;
+
+unary_expr    = ( "!" | "-" ) , unary_expr
+              | postfix_expr ;
+
+postfix_expr  = primary_expr , { member_access | index_access | call_args } ;
+member_access = "." , identifier ;
+index_access  = "[" , expression , "]" ;
+call_args     = "(" , [ arg_list ] , ")" ;
+arg_list      = expression , { "," , expression } ;
+
+primary_expr  = literal
+              | identifier
+              | "state"
+              | array_literal
+              | map_literal
+              | "(" , expression , ")" ;
+
+(* 5.1 呼び出し式（directive内で使用） *)
+call_expression = identifier , { member_access } ,
+                  "(" , [ arg_list ] , ")" ;
+
+(* 5.2 配列リテラル *)
+array_literal = "[" , [ array_elements ] , "]" ;
+array_elements = expression , { "," , expression } , [ "," ] ;
+
+(* 5.3 マップリテラル *)
+map_literal   = "{" , [ map_entries ] , "}" ;
+map_entries   = map_entry , { "," , map_entry } , [ "," ] ;
+map_entry     = ( string_literal | identifier ) , ":" , expression ;
+
+
+(* ------------------------------------------------------------ *)
+(* 6. 国際化 (i18n)                                             *)
+(* ------------------------------------------------------------ *)
+
+locale_decl   = "@locale" , { whitespace } , identifier , newline ;
+text_decl     = "@text" , { whitespace } , identifier ,
+                { whitespace } , "=" , { whitespace } ,
+                string_literal , newline ;
+text_ref      = "@t" , { whitespace } , identifier , newline ;
+
+
+(* ------------------------------------------------------------ *)
+(* 7. プロジェクト構成 (neru.toml)                              *)
+(* ------------------------------------------------------------ *)
+(* neru.toml は TOML 仕様 (https://toml.io/en/v1.0.0) に準拠。  *)
+(* 以下は neru 固有のセクション定義。                           *)
+(*                                                              *)
+(*   [project]                                                  *)
+(*   name    = <string>     # プロジェクト名                    *)
+(*   version = <string>     # バージョン (semver)               *)
+(*   entry   = <string>     # エントリポイント .neru ファイル   *)
+(*                                                              *)
+(*   [assets]                                                   *)
+(*   path    = <string>     # アセットディレクトリ              *)
+(*                                                              *)
+(*   [build]                                                    *)
+(*   output  = <string>     # ビルド出力先ディレクトリ          *)
+(*                                                              *)
+(*   [i18n]                                                     *)
+(*   default = <string>     # デフォルトロケール                *)
+(*   locales = [<string>]   # サポートロケール一覧              *)
+(*   path    = <string>     # ロケールファイルディレクトリ      *)
+(* ------------------------------------------------------------ *)
