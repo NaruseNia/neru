@@ -849,9 +849,7 @@ const TestContext = struct {
     root: NodeIndex,
 
     fn deinit(self: *TestContext) void {
-        self.compiler.deinit();
-        self.diags.deinit();
-        self.nodes.deinit();
+        // Arena handles all memory; individual deinit calls would double-free
         self.arena.deinit();
     }
 };
