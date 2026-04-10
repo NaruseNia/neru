@@ -27,8 +27,8 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        try printUsage(stderr);
-        std.process.exit(1);
+        try printUsage(stdout);
+        return;
     }
 
     const command = args[1];
