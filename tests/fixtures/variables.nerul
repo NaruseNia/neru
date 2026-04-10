@@ -1,0 +1,11 @@
+// Variables, assignment, compound assignment
+let x = 10
+x = x + 5
+x += 10
+x -= 3
+x *= 2
+
+let name = "neru"
+let flag = true
+let nothing = null
+let pi = 3.14159

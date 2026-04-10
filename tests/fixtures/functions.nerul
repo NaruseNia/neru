@@ -1,0 +1,19 @@
+// Function declarations and calls
+fn add(a, b) {
+  return a + b
+}
+
+fn double(n) {
+  return n * 2
+}
+
+fn factorial(n) {
+  if n <= 1 {
+    return 1
+  }
+  return n * factorial(n - 1)
+}
+
+let sum = add(10, 20)
+let doubled = double(21)
+let fact5 = factorial(5)
