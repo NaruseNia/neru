@@ -10,4 +10,8 @@ build/
 build-*/
 docgen_tmp/
 
+### neru ###
+# Compiled bytecode
+*.neruc
+
 # End of https://www.toptal.com/developers/gitignore/api/zig

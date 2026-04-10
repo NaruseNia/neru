@@ -176,6 +176,7 @@ pub const Compiler = struct {
 
     locals: std.ArrayList(Local) = .empty,
     scope_depth: u16,
+    max_locals: u32,
 
     loop_stack: std.ArrayList(LoopContext) = .empty,
 
@@ -196,6 +197,7 @@ pub const Compiler = struct {
             .nodes = nodes,
             .diagnostics = diagnostics,
             .scope_depth = 0,
+            .max_locals = 0,
             .current_func_local_start = 0,
         };
     }
@@ -228,9 +230,8 @@ pub const Compiler = struct {
 
         try self.emit(.halt);
 
-        // Patch main function local count
-        const local_count: u16 = @intCast(self.locals.items.len);
-        self.functions.items[0].local_count = local_count;
+        // Patch main function local count (use max to account for scoped locals)
+        self.functions.items[0].local_count = @intCast(self.max_locals);
 
         return .{
             .bytecode = self.bytecode.items,
@@ -281,13 +282,24 @@ pub const Compiler = struct {
         const func_offset: u32 = @intCast(self.bytecode.items.len);
         const name_idx = try self.addStringConstant(decl.name);
 
+        // Pre-register function so recursive calls can find it
+        const func_id: u16 = @intCast(self.functions.items.len);
+        self.functions.append(self.allocator, .{
+            .name_idx = name_idx,
+            .arity = @intCast(decl.params.len),
+            .bytecode_offset = func_offset,
+            .local_count = 0, // patched later
+        }) catch return error.OutOfMemory;
+
         // Save compiler state
         const saved_local_start = self.current_func_local_start;
         const saved_local_count = self.locals.items.len;
         const saved_depth = self.scope_depth;
+        const saved_max_locals = self.max_locals;
 
         self.current_func_local_start = @intCast(self.locals.items.len);
         self.scope_depth = 0;
+        self.max_locals = 0;
 
         // Declare parameters as locals
         for (decl.params) |param| {
@@ -304,26 +316,18 @@ pub const Compiler = struct {
         try self.emit(.ret);
         self.endScope();
 
-        const func_local_count: u16 = @intCast(self.locals.items.len - self.current_func_local_start);
+        // Patch function local count
+        self.functions.items[func_id].local_count = @intCast(self.max_locals);
 
         // Restore compiler state
         self.locals.shrinkRetainingCapacity(saved_local_count);
         self.current_func_local_start = saved_local_start;
         self.scope_depth = saved_depth;
-
-        // Register function
-        const func_id: u16 = @intCast(self.functions.items.len);
-        self.functions.append(self.allocator, .{
-            .name_idx = name_idx,
-            .arity = @intCast(decl.params.len),
-            .bytecode_offset = func_offset,
-            .local_count = func_local_count,
-        }) catch return error.OutOfMemory;
+        self.max_locals = saved_max_locals;
 
         self.patchJump(jump_over);
 
         // Store function reference as a local
-        // Push function id as constant, then store
         const func_const = try self.addConstant(.{ .int = @intCast(func_id) });
         try self.emitWithU16(.push_const, func_const);
         const slot = try self.declareLocal(decl.name);
@@ -651,7 +655,6 @@ pub const Compiler = struct {
     }
 
     fn compileCall(self: *Compiler, expr: ast.CallExpr) !void {
-        // Resolve function
         const callee = self.nodes.getNode(expr.callee);
         if (callee != .identifier_expr) {
             self.diagnostics.addError(.codegen, expr.span, "callee must be an identifier");
@@ -663,17 +666,6 @@ pub const Compiler = struct {
             try self.compileExpr(arg);
         }
 
-        // Find function by name
-        if (self.resolveLocal(callee.identifier_expr.name)) |slot| {
-            // Load function id from local
-            try self.emitWithU16(.load_local, slot);
-            // Pop function id, it's the func_id for call
-            // Actually we need a different approach: we store func_id as int constant
-            // For simplicity, emit call with the function lookup at runtime
-            // For Phase 1, we'll look up the function in the function table
-            try self.emit(.pop); // pop the func id we just loaded
-        }
-
         // Search function table for the name
         const name = callee.identifier_expr.name;
         var func_id: ?u16 = null;
@@ -681,7 +673,6 @@ pub const Compiler = struct {
             const fname = self.constants.items[f.name_idx].string;
             if (std.mem.eql(u8, fname, name)) {
                 func_id = @intCast(i);
-                break;
             }
         }
 
@@ -807,21 +798,25 @@ pub const Compiler = struct {
     }
 
     fn declareLocal(self: *Compiler, name: []const u8) !u16 {
-        const slot: u16 = @intCast(self.locals.items.len);
         self.locals.append(self.allocator, .{
             .name = name,
             .depth = self.scope_depth,
         }) catch return error.OutOfMemory;
-        return slot;
+        const relative_slot: u16 = @intCast(self.locals.items.len - 1 - self.current_func_local_start);
+        const current_count: u32 = @as(u32, relative_slot) + 1;
+        if (current_count > self.max_locals) {
+            self.max_locals = current_count;
+        }
+        return relative_slot;
     }
 
     fn resolveLocal(self: *const Compiler, name: []const u8) ?u16 {
         if (self.locals.items.len == 0) return null;
         var i: usize = self.locals.items.len;
-        while (i > 0) {
+        while (i > self.current_func_local_start) {
             i -= 1;
             if (std.mem.eql(u8, self.locals.items[i].name, name)) {
-                return @intCast(i);
+                return @intCast(i - self.current_func_local_start);
             }
         }
         return null;
