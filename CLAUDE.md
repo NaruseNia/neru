@@ -16,6 +16,7 @@ Implementation language is **Zig** (minimum 0.15.2). The compiler pipeline is: L
 - **Commit per task**: Always create a separate commit for each logical task. Do not batch unrelated changes into a single commit.
 - **Discuss before assuming**: When anything is unclear or ambiguous, use `AskUserQuestion` to discuss with the user before proceeding. Do not guess or make assumptions on design decisions.
 - **Branch and PR flow**: When the task warrants it, create a feature branch before starting work. Once complete, open a PR and merge. Do not push directly to main for non-trivial changes.
+- **Update docs after work**: After completing a task, update relevant documents under `docs/` as needed. In particular, keep the checklist in `docs/specification/implementation-plan.md` up to date to reflect the current implementation status.
 
 ## Build & Test Commands
 
