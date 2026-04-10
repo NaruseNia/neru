@@ -1,5 +1,5 @@
 pub const compiler = @import("compiler.zig");
-pub const vm = @import("vm_mod.zig");
+pub const vm = @import("vm.zig");
 
 test {
     const std = @import("std");

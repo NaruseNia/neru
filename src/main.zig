@@ -1,12 +1,12 @@
 const std = @import("std");
 const neru = @import("neru");
 
-const Lexer = neru.compiler.lexer.Lexer;
-const Parser = neru.compiler.parser.Parser;
-const Compiler = neru.compiler.codegen.Compiler;
-const DiagnosticList = neru.compiler.diagnostic.DiagnosticList;
-const NodeStore = neru.compiler.ast.NodeStore;
-const VM = neru.vm.vm.VM;
+const Lexer = neru.compiler.Lexer;
+const Parser = neru.compiler.Parser;
+const Compiler = neru.compiler.Compiler;
+const DiagnosticList = neru.compiler.DiagnosticList;
+const NodeStore = neru.compiler.NodeStore;
+const VM = neru.vm.VM;
 
 pub fn main() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
