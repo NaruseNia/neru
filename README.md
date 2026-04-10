@@ -6,7 +6,7 @@ Designed with a two-layer architecture so both scenario writers and programmers 
 
 [日本語版 README](README_ja.md)
 
-> **Warning**
+> [!WARNING]
 > This project is under active development. The language specification and API are subject to breaking changes without notice. **Do not use in production.**
 
 ## Features
