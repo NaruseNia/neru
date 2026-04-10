@@ -23,29 +23,31 @@ pub fn main() !void {
     defer stdout.flush() catch {};
     defer stderr.flush() catch {};
 
-    var args = std.process.args();
-    _ = args.next(); // skip program name
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
-    const command = args.next() orelse {
+    if (args.len < 2) {
         try printUsage(stderr);
         std.process.exit(1);
-    };
+    }
+
+    const command = args[1];
 
     if (std.mem.eql(u8, command, "compile")) {
-        const file_path = args.next() orelse {
+        if (args.len < 3) {
             try stderr.print("error: missing file path\n", .{});
             std.process.exit(1);
-        };
-        compileFile(allocator, file_path, stdout, stderr) catch |err| {
+        }
+        compileFile(allocator, args[2], stdout, stderr) catch |err| {
             try stderr.print("error: {}\n", .{err});
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "run")) {
-        const file_path = args.next() orelse {
+        if (args.len < 3) {
             try stderr.print("error: missing file path\n", .{});
             std.process.exit(1);
-        };
-        runFile(allocator, file_path, stdout, stderr) catch |err| {
+        }
+        runFile(allocator, args[2], stdout, stderr) catch |err| {
             try stderr.print("error: {}\n", .{err});
             std.process.exit(1);
         };
