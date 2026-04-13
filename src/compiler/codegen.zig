@@ -267,6 +267,7 @@ pub const Compiler = struct {
             .speaker_directive => |n| try self.compileSpeakerDirective(n),
             .wait_directive => |n| try self.compileWaitDirective(n),
             .clear_directive => |n| try self.compileClearDirective(n),
+            .media_directive => |n| try self.compileMediaDirective(n),
             else => {
                 // Expression nodes shouldn't appear at statement level
                 try self.compileExpr(idx);
@@ -329,6 +330,51 @@ pub const Compiler = struct {
     fn compileClearDirective(self: *Compiler, d: ast.ClearDirective) !void {
         self.addDebugLine(d.span.start.line);
         try self.emit(.emit_text_clear);
+    }
+
+    fn compileMediaDirective(self: *Compiler, d: ast.MediaDirective) !void {
+        self.addDebugLine(d.span.start.line);
+
+        // Push primary (image / character / track / sound / kind).
+        if (d.primary) |p| {
+            const idx = try self.addStringConstant(p);
+            try self.emitWithU16(.push_const, idx);
+        }
+
+        // Push each option as (key_string, value).
+        for (d.options) |opt| {
+            const key_idx = try self.addStringConstant(opt.key);
+            try self.emitWithU16(.push_const, key_idx);
+            try self.pushOptionValue(opt.value);
+        }
+
+        if (d.options.len > 255) {
+            self.diagnostics.addError(.codegen, d.span, "too many directive options (max 255)");
+            return error.RuntimeError;
+        }
+
+        // emit_directive: [kind: u8][arg_count: u8]
+        try self.emit(.emit_directive);
+        self.bytecode.append(self.allocator, @intFromEnum(d.kind)) catch return error.OutOfMemory;
+        self.bytecode.append(self.allocator, @intCast(d.options.len)) catch return error.OutOfMemory;
+    }
+
+    fn pushOptionValue(self: *Compiler, v: ast.OptionValue) !void {
+        switch (v) {
+            .int => |n| {
+                const idx = try self.addConstant(.{ .int = n });
+                try self.emitWithU16(.push_const, idx);
+            },
+            .float => |f| {
+                const idx = try self.addConstant(.{ .float = f });
+                try self.emitWithU16(.push_const, idx);
+            },
+            .string, .ident => |s| {
+                const idx = try self.addStringConstant(s);
+                try self.emitWithU16(.push_const, idx);
+            },
+            .bool_val => |b| try self.emit(if (b) .push_true else .push_false),
+        }
     }
 
     fn compileLetStmt(self: *Compiler, stmt: ast.LetStmt) !void {
