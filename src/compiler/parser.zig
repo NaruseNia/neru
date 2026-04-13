@@ -187,7 +187,25 @@ pub const Parser = struct {
         var primary: ?[]const u8 = null;
         if (primary_kind == .required) {
             primary = switch (self.current.tag) {
-                .identifier, .text_chunk => blk: {
+                .identifier => blk: {
+                    // Accept dotted paths like `forest.png` by extending the
+                    // lexeme across '.identifier' continuations. The lexer
+                    // emits adjacent identifier/dot tokens with contiguous
+                    // spans so we can slice the source directly.
+                    const start_off = self.current.span.start.offset;
+                    self.advance();
+                    while (self.current.tag == .dot) {
+                        self.advance();
+                        if (self.current.tag != .identifier) {
+                            self.reportError("expected identifier after '.' in directive path");
+                            return error.UnexpectedToken;
+                        }
+                        self.advance();
+                    }
+                    const end_off = self.previous.span.end.offset;
+                    break :blk self.lexer.source[start_off..end_off];
+                },
+                .text_chunk => blk: {
                     const s = self.current.lexeme;
                     self.advance();
                     break :blk s;

@@ -1022,6 +1022,76 @@ test "integration: greeting scenario emits expected event sequence" {
     }
 }
 
+test "integration: media directives emit expected events" {
+    const source =
+        \\@bg forest.png --fade=slow --duration=500
+        \\@show taro --pos=center
+        \\@bgm theme.ogg --volume=0.8
+        \\@se door.wav
+        \\@transition wipe --direction=left
+        \\@hide taro
+        \\@bgm_stop
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tags = try runScenarioCollect(arena.allocator(), source);
+
+    const expected = [_][]const u8{
+        "bg_change",
+        "sprite_show",
+        "bgm_play",
+        "se_play",
+        "transition",
+        "sprite_hide",
+        "bgm_stop",
+    };
+    try std.testing.expectEqual(expected.len, tags.items.len);
+    for (expected, tags.items) |want, got| {
+        try std.testing.expectEqualStrings(want, got);
+    }
+}
+
+test "integration: media directive options are threaded through" {
+    const source =
+        \\@bg forest.png --fade=slow --duration=500
+        \\
+    ;
+    const diagnostic = @import("../compiler/diagnostic.zig");
+    const ast_mod = @import("../compiler/ast.zig");
+    const lexer_mod = @import("../compiler/lexer.zig");
+    const parser_mod = @import("../compiler/parser.zig");
+    const codegen_mod = @import("../compiler/codegen.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var diags = diagnostic.DiagnosticList.init(allocator);
+    var nodes = ast_mod.NodeStore.init(allocator);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .scenario);
+    var parser = parser_mod.Parser.init(allocator, &lexer, &nodes, &diags);
+    const root = try parser.parseProgram();
+    try std.testing.expect(!diags.hasErrors());
+
+    var compiler = codegen_mod.Compiler.init(allocator, &nodes, &diags);
+    const module = try compiler.compile(root);
+    try std.testing.expect(!diags.hasErrors());
+
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const evt = try vm.runUntilEvent();
+    const bg = evt.?.bg_change;
+    try std.testing.expectEqualStrings("forest.png", bg.image);
+    try std.testing.expectEqual(@as(usize, 2), bg.args.len);
+    try std.testing.expectEqualStrings("fade", bg.args[0].key);
+    try std.testing.expectEqualStrings("slow", bg.args[0].value.string);
+    try std.testing.expectEqualStrings("duration", bg.args[1].key);
+    try std.testing.expectEqual(@as(i64, 500), bg.args[1].value.int);
+}
+
 test "integration: text line carries compile-time speaker" {
     const source =
         \\@speaker Alice
