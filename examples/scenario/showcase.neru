@@ -1,0 +1,45 @@
+@bg classroom.png --fade=slow
+@bgm school_theme.ogg --volume=0.7
+@speaker Teacher
+Good morning, class.
+@wait 500
+@show student_a --pos=left
+@show student_b --pos=right
+
+@speaker "Student A"
+Morning, sensei!
+
+@if 7 > 3
+Everyone looks cheerful today.
+@else
+Everyone looks tired today.
+@end
+
+#choice
+  - "Answer the question" -> answer
+  - "Stay silent" -> silent
+  - "Make a joke" -> joke @if 1 == 1
+
+#answer
+@speaker "Student A"
+The answer is forty-two.
+@goto conclusion
+
+#silent
+@speaker Teacher
+(The classroom falls quiet.)
+@goto conclusion
+
+#joke
+@speaker "Student A"
+Why did the scripter cross the road? To emit an event.
+@goto conclusion
+
+#conclusion
+@transition fade --duration=800
+@clear
+@hide student_a
+@hide student_b
+@bgm_stop
+@speaker Teacher
+Class dismissed.

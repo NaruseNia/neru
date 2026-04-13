@@ -39,10 +39,13 @@ pub fn main() !void {
     if (std.mem.eql(u8, command, "compile")) {
         if (args.len < 3) {
             try stderr.print("error: missing file path\n", .{});
+            stderr.flush() catch {};
             std.process.exit(1);
         }
         compileFile(allocator, args[2], stdout, stderr) catch |err| {
             try stderr.print("error: {}\n", .{err});
+            stderr.flush() catch {};
+            stdout.flush() catch {};
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "run")) {
@@ -57,10 +60,13 @@ pub fn main() !void {
         }
         if (file_path == null) {
             try stderr.print("error: missing file path\n", .{});
+            stderr.flush() catch {};
             std.process.exit(1);
         }
         runFile(allocator, file_path.?, mock, stdout, stderr) catch |err| {
             try stderr.print("error: {}\n", .{err});
+            stderr.flush() catch {};
+            stdout.flush() catch {};
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
@@ -68,6 +74,7 @@ pub fn main() !void {
     } else {
         try stderr.print("error: unknown command '{s}'\n", .{command});
         try printUsage(stderr);
+        stderr.flush() catch {};
         std.process.exit(1);
     }
 }

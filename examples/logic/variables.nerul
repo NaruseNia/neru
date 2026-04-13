@@ -1,0 +1,10 @@
+let name = "neru"
+let count = 3
+let pi = 3.14
+let flag = true
+
+count += 1
+count *= 2
+// count = 8
+
+let greeting = "hello, " + name

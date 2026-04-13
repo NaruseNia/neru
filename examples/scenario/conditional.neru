@@ -1,0 +1,24 @@
+@if 10 > 5
+The big number wins.
+@elif 3 == 3
+The matching branch fires.
+@else
+Fallback.
+@end
+
+#choice
+  - "Always available" -> path_a
+  - "Secret option" -> path_b @if 1 == 1
+  - "Unavailable" -> path_c @if 1 == 0
+
+#path_a
+You picked the safe choice.
+@goto done
+#path_b
+You unlocked the secret branch.
+@goto done
+#path_c
+(Unreachable while the condition is false.)
+@goto done
+#done
+That's all for now.
