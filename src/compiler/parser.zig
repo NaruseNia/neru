@@ -88,8 +88,114 @@ pub const Parser = struct {
             .kw_return => self.parseReturnStmt(),
             .kw_break => self.parseBreakStmt(),
             .kw_continue => self.parseContinueStmt(),
+            .at_directive => self.parseDirective(),
+            .text_chunk => self.parseTextLine(),
             else => self.parseAssignOrExprStmt(),
         };
+    }
+
+    // ---- Scenario parsers ----
+
+    fn parseDirective(self: *Parser) ParseError!NodeIndex {
+        const start = self.current.span.start;
+        const name = self.current.lexeme;
+        self.advance(); // consume at_directive
+
+        if (std.mem.eql(u8, name, "speaker")) {
+            return self.parseSpeakerDirective(start);
+        }
+        if (std.mem.eql(u8, name, "wait")) {
+            return self.parseWaitDirective(start);
+        }
+        if (std.mem.eql(u8, name, "clear")) {
+            return self.parseClearDirective(start);
+        }
+        self.reportErrorFmt("unknown directive '@{s}'", .{name});
+        // Skip to end of line to recover.
+        while (self.current.tag != .newline and self.current.tag != .eof) {
+            self.advance();
+        }
+        return error.UnexpectedToken;
+    }
+
+    fn parseSpeakerDirective(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        const name = switch (self.current.tag) {
+            .identifier => blk: {
+                const s = self.current.lexeme;
+                self.advance();
+                break :blk s;
+            },
+            .string_literal => blk: {
+                // Strip surrounding quotes.
+                const lex = self.current.lexeme;
+                const s = if (lex.len >= 2) lex[1 .. lex.len - 1] else lex;
+                self.advance();
+                break :blk s;
+            },
+            else => {
+                self.reportError("expected speaker name after '@speaker'");
+                return error.UnexpectedToken;
+            },
+        };
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .speaker_directive = .{
+            .name = name,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseWaitDirective(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        if (self.current.tag != .int_literal) {
+            self.reportError("expected integer literal after '@wait'");
+            return error.UnexpectedToken;
+        }
+        const lit = self.current.lexeme;
+        const ms = std.fmt.parseInt(u32, lit, 10) catch {
+            self.reportErrorFmt("invalid @wait duration '{s}'", .{lit});
+            return error.UnexpectedToken;
+        };
+        self.advance();
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .wait_directive = .{
+            .ms = ms,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseClearDirective(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .clear_directive = .{
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseTextLine(self: *Parser) ParseError!NodeIndex {
+        const start = self.current.span.start;
+        var segments: std.ArrayList(ast.TextSegment) = .empty;
+        defer segments.deinit(self.allocator);
+
+        while (true) {
+            switch (self.current.tag) {
+                .text_chunk => {
+                    segments.append(self.allocator, .{ .text = self.current.lexeme }) catch return error.OutOfMemory;
+                    self.advance();
+                },
+                .lbrace => {
+                    self.advance(); // skip '{'
+                    const expr = try self.parseExpression();
+                    try self.expect(.rbrace);
+                    segments.append(self.allocator, .{ .expr = expr }) catch return error.OutOfMemory;
+                },
+                else => break,
+            }
+        }
+        try self.expectNewlineOrEof();
+
+        const owned = self.allocator.dupe(ast.TextSegment, segments.items) catch return error.OutOfMemory;
+        return self.addNode(.{ .text_line = .{
+            .segments = owned,
+            .span = self.spanFrom(start),
+        } });
     }
 
     fn parseLetStmt(self: *Parser) ParseError!NodeIndex {
@@ -690,7 +796,8 @@ pub const Parser = struct {
 
     fn reportErrorFmt(self: *Parser, comptime fmt: []const u8, args: anytype) void {
         self.had_error = true;
-        const message = std.fmt.allocPrint(self.allocator, fmt, args) catch "error";
+        var buf: [256]u8 = undefined;
+        const message = std.fmt.bufPrint(&buf, fmt, args) catch "error";
         self.diagnostics.addError(.parser, self.current.span, message);
     }
 
@@ -1146,6 +1253,142 @@ test "parse empty map" {
     const map = result.nodes.getNode(stmt.let_stmt.value);
     try std.testing.expectEqual(@as(usize, 0), map.map_expr.entries.len);
     allocator.free(map.map_expr.entries);
+}
+
+// ---- Scenario parser tests ----
+
+fn parseScenarioSource(source: []const u8, allocator: std.mem.Allocator) !struct {
+    nodes: ast.NodeStore,
+    diags: diagnostic.DiagnosticList,
+    root: NodeIndex,
+} {
+    var diags = diagnostic.DiagnosticList.init(allocator);
+    var nodes = ast.NodeStore.init(allocator);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .scenario);
+    var parser = Parser.init(allocator, &lexer, &nodes, &diags);
+
+    const root = try parser.parseProgram();
+    return .{ .nodes = nodes, .diags = diags, .root = root };
+}
+
+test "scenario parser: plain text line" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("Hello world\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const stmt = getStmt(&result, 0);
+    const line = stmt.text_line;
+    try std.testing.expectEqual(@as(usize, 1), line.segments.len);
+    try std.testing.expectEqualStrings("Hello world", line.segments[0].text);
+    allocator.free(line.segments);
+}
+
+test "scenario parser: text line with interpolation" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("hi {name}!\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const stmt = getStmt(&result, 0);
+    const line = stmt.text_line;
+    try std.testing.expectEqual(@as(usize, 3), line.segments.len);
+    try std.testing.expectEqualStrings("hi ", line.segments[0].text);
+    const expr_node = result.nodes.getNode(line.segments[1].expr);
+    try std.testing.expectEqualStrings("name", expr_node.identifier_expr.name);
+    try std.testing.expectEqualStrings("!", line.segments[2].text);
+    allocator.free(line.segments);
+}
+
+test "scenario parser: @speaker with identifier" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("@speaker Alice\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const stmt = getStmt(&result, 0);
+    try std.testing.expectEqualStrings("Alice", stmt.speaker_directive.name);
+}
+
+test "scenario parser: @speaker with string literal" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("@speaker \"Bob\"\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const stmt = getStmt(&result, 0);
+    try std.testing.expectEqualStrings("Bob", stmt.speaker_directive.name);
+}
+
+test "scenario parser: @wait takes ms" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("@wait 500\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const stmt = getStmt(&result, 0);
+    try std.testing.expectEqual(@as(u32, 500), stmt.wait_directive.ms);
+}
+
+test "scenario parser: @clear" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("@clear\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const stmt = getStmt(&result, 0);
+    try std.testing.expect(@as(std.meta.Tag(ast.Node), stmt) == .clear_directive);
+}
+
+test "scenario parser: unknown directive reports error" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("@unknown\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(result.diags.hasErrors());
+}
+
+test "scenario parser: mixed directives and text" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource(
+        \\@speaker Alice
+        \\Hello
+        \\@wait 100
+        \\Goodbye
+        \\
+    , allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const program = result.nodes.getNode(result.root).program;
+    try std.testing.expectEqual(@as(usize, 4), program.stmts.len);
+
+    try std.testing.expect(@as(std.meta.Tag(ast.Node), getStmt(&result, 0)) == .speaker_directive);
+    try std.testing.expect(@as(std.meta.Tag(ast.Node), getStmt(&result, 1)) == .text_line);
+    try std.testing.expect(@as(std.meta.Tag(ast.Node), getStmt(&result, 2)) == .wait_directive);
+    try std.testing.expect(@as(std.meta.Tag(ast.Node), getStmt(&result, 3)) == .text_line);
+
+    // Cleanup allocated segment slices
+    for (program.stmts) |idx| {
+        const n = result.nodes.getNode(idx);
+        if (n == .text_line) allocator.free(n.text_line.segments);
+    }
 }
 
 test "error recovery continues parsing" {
