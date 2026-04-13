@@ -90,6 +90,7 @@ pub const Parser = struct {
             .kw_continue => self.parseContinueStmt(),
             .at_directive => self.parseDirective(),
             .text_chunk => self.parseTextLine(),
+            .hash_label => self.parseHashStatement(),
             else => self.parseAssignOrExprStmt(),
         };
     }
@@ -110,6 +111,8 @@ pub const Parser = struct {
         if (std.mem.eql(u8, name, "clear")) {
             return self.parseClearDirective(start);
         }
+        if (std.mem.eql(u8, name, "goto")) return self.parseGotoDirective(start);
+        if (std.mem.eql(u8, name, "jump")) return self.parseJumpDirective(start);
         if (std.mem.eql(u8, name, "bg")) return self.parseMediaDirective(start, .bg, .required);
         if (std.mem.eql(u8, name, "show")) return self.parseMediaDirective(start, .sprite_show, .required);
         if (std.mem.eql(u8, name, "hide")) return self.parseMediaDirective(start, .sprite_hide, .required);
@@ -172,6 +175,120 @@ pub const Parser = struct {
     fn parseClearDirective(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
         try self.expectNewlineOrEof();
         return self.addNode(.{ .clear_directive = .{
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseGotoDirective(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        const target = try self.expectIdent();
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .goto_directive = .{
+            .target = target,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseJumpDirective(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        // Accept either: @jump "path/file.neru" [#label]  or  @jump identifier [#label]
+        const file = switch (self.current.tag) {
+            .identifier => blk: {
+                const start_off = self.current.span.start.offset;
+                self.advance();
+                while (self.current.tag == .dot) {
+                    self.advance();
+                    if (self.current.tag != .identifier) {
+                        self.reportError("expected identifier after '.' in jump path");
+                        return error.UnexpectedToken;
+                    }
+                    self.advance();
+                }
+                break :blk self.lexer.source[start_off..self.previous.span.end.offset];
+            },
+            .string_literal => blk: {
+                const lex = self.current.lexeme;
+                const s = if (lex.len >= 2) lex[1 .. lex.len - 1] else lex;
+                self.advance();
+                break :blk s;
+            },
+            else => {
+                self.reportError("expected file reference after '@jump'");
+                return error.UnexpectedToken;
+            },
+        };
+
+        var label: ?[]const u8 = null;
+        if (self.current.tag == .hash_label) {
+            label = self.current.lexeme;
+            self.advance();
+        }
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .jump_directive = .{
+            .file = file,
+            .label = label,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseHashStatement(self: *Parser) ParseError!NodeIndex {
+        const start = self.current.span.start;
+        const name = self.current.lexeme;
+        self.advance(); // consume .hash_label
+
+        if (std.mem.eql(u8, name, "choice")) {
+            return self.parseChoiceBlock(start);
+        }
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .label_def = .{
+            .name = name,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseChoiceBlock(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        try self.expectNewlineOrEof();
+        self.skipNewlines();
+
+        var items: std.ArrayList(ast.ChoiceItem) = .empty;
+        defer items.deinit(self.allocator);
+
+        while (self.current.tag == .dash_bullet) {
+            self.advance(); // consume '-'
+            if (self.current.tag != .string_literal) {
+                self.reportError("expected quoted choice text after '-'");
+                return error.UnexpectedToken;
+            }
+            const lex = self.current.lexeme;
+            const text = if (lex.len >= 2) lex[1 .. lex.len - 1] else lex;
+            self.advance();
+
+            try self.expect(.arrow);
+
+            const target = try self.expectIdent();
+
+            var condition: ?NodeIndex = null;
+            if (self.current.tag == .at_directive and std.mem.eql(u8, self.current.lexeme, "if")) {
+                self.advance();
+                condition = try self.parseExpression();
+            }
+
+            try self.expectNewlineOrEof();
+            self.skipNewlines();
+
+            items.append(self.allocator, .{
+                .label = text,
+                .target = target,
+                .condition = condition,
+            }) catch return error.OutOfMemory;
+        }
+
+        if (items.items.len == 0) {
+            self.reportError("#choice block requires at least one '- text -> label' entry");
+            return error.UnexpectedToken;
+        }
+
+        const owned = self.allocator.dupe(ast.ChoiceItem, items.items) catch return error.OutOfMemory;
+        return self.addNode(.{ .choice_block = .{
+            .items = owned,
             .span = self.spanFrom(start),
         } });
     }

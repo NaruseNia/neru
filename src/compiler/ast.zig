@@ -28,6 +28,10 @@ pub const Node = union(enum) {
     wait_directive: WaitDirective,
     clear_directive: ClearDirective,
     media_directive: MediaDirective,
+    label_def: LabelDef,
+    goto_directive: GotoDirective,
+    jump_directive: JumpDirective,
+    choice_block: ChoiceBlock,
 
     // Expressions
     binary_expr: BinaryExpr,
@@ -60,6 +64,10 @@ pub const Node = union(enum) {
             .wait_directive => |n| n.span,
             .clear_directive => |n| n.span,
             .media_directive => |n| n.span,
+            .label_def => |n| n.span,
+            .goto_directive => |n| n.span,
+            .jump_directive => |n| n.span,
+            .choice_block => |n| n.span,
             .binary_expr => |n| n.span,
             .unary_expr => |n| n.span,
             .call_expr => |n| n.span,
@@ -199,6 +207,38 @@ pub const MediaDirective = struct {
     kind: DirectiveKind,
     primary: ?[]const u8,
     options: []const DirectiveOption,
+    span: Span,
+};
+
+/// `#name` label definition — a jump target.
+pub const LabelDef = struct {
+    name: []const u8,
+    span: Span,
+};
+
+/// `@goto ident` — unconditional jump to an in-file label.
+pub const GotoDirective = struct {
+    target: []const u8,
+    span: Span,
+};
+
+/// `@jump path [#label]` — cross-file jump. Phase 2.3 parses but stubs
+/// execution at runtime.
+pub const JumpDirective = struct {
+    file: []const u8,
+    label: ?[]const u8,
+    span: Span,
+};
+
+pub const ChoiceItem = struct {
+    label: []const u8, // display text
+    target: []const u8, // destination label name
+    condition: ?NodeIndex, // optional @if expression
+};
+
+/// #choice block with its items.
+pub const ChoiceBlock = struct {
+    items: []const ChoiceItem,
     span: Span,
 };
 
