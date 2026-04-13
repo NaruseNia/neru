@@ -81,6 +81,10 @@ pub const Tag = enum {
     colon,
     arrow,
 
+    // Scenario
+    at_directive, // '@name' — lexeme is the name without '@'
+    text_chunk, // plain text segment inside a scenario text line
+
     // Special
     newline,
     eof,
@@ -141,6 +145,8 @@ pub const Tag = enum {
             .comma => ",",
             .colon => ":",
             .arrow => "->",
+            .at_directive => "<@directive>",
+            .text_chunk => "<text>",
             .newline => "<newline>",
             .eof => "<eof>",
             .invalid => "<invalid>",
