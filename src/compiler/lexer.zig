@@ -90,11 +90,14 @@ pub const Lexer = struct {
         const was_at_line_start = self.prev_was_newline;
         self.prev_was_newline = false;
 
+        // `@name` is always a directive token, regardless of position. This
+        // supports things like `-> y @if cond` inside choice items.
+        if (c == '@') {
+            return self.readDirective(start);
+        }
+
         // Scenario-mode line-start dispatch
         if (self.mode == .scenario and was_at_line_start and self.interp_depth == 0) {
-            if (c == '@') {
-                return self.readDirective(start);
-            }
             if (c == '#') {
                 return self.readHashLabel(start);
             }
