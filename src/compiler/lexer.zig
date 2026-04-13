@@ -326,6 +326,7 @@ pub const Lexer = struct {
             '-' => {
                 if (self.match('=')) return self.makeTokenWithLexeme(.minus_assign, start, self.source[start_pos..self.pos]);
                 if (self.match('>')) return self.makeTokenWithLexeme(.arrow, start, self.source[start_pos..self.pos]);
+                if (self.match('-')) return self.makeTokenWithLexeme(.dashdash, start, self.source[start_pos..self.pos]);
                 return self.makeTokenWithLexeme(.minus, start, self.source[start_pos..self.pos]);
             },
             '*' => {
