@@ -350,6 +350,8 @@ pub const VM = struct {
                     self.suspended = true;
                 },
 
+                .to_str => try self.coerceToString(),
+
                 .halt => {
                     if (self.stack.top > 0) {
                         self.final_value = self.pop() catch null;
@@ -470,6 +472,27 @@ pub const VM = struct {
             .transition => .{ .transition = .{ .kind = try self.popString(), .args = args } },
         };
         self.suspended = true;
+    }
+
+    fn coerceToString(self: *VM) VMError!void {
+        const v = try self.pop();
+        if (v == .string) {
+            try self.push(v);
+            return;
+        }
+        const s = switch (v) {
+            .int => |i| std.fmt.allocPrint(self.allocator, "{d}", .{i}) catch return error.RuntimeError,
+            .float => |f| std.fmt.allocPrint(self.allocator, "{d}", .{f}) catch return error.RuntimeError,
+            .bool_val => |b| self.allocator.dupe(u8, if (b) "true" else "false") catch return error.RuntimeError,
+            .null_val => self.allocator.dupe(u8, "null") catch return error.RuntimeError,
+            .function => |id| std.fmt.allocPrint(self.allocator, "<fn:{d}>", .{id}) catch return error.RuntimeError,
+            .string => unreachable,
+        };
+        self.allocated_strings.append(self.allocator, s) catch {
+            self.allocator.free(s);
+            return error.RuntimeError;
+        };
+        try self.push(.{ .string = s });
     }
 
     fn emitChoice(self: *VM, count: u8) VMError!void {

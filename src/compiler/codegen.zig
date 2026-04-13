@@ -187,6 +187,10 @@ pub const Compiler = struct {
     // For function compilation
     current_func_local_start: u32,
 
+    // Compile-time speaker tracking for scenario text lines. Updated by
+    // @speaker directives and pushed as the speaker operand of emit_text.
+    current_speaker: ?[]const u8 = null,
+
     pub fn init(
         allocator: std.mem.Allocator,
         nodes: *const ast.NodeStore,
@@ -259,11 +263,72 @@ pub const Compiler = struct {
                 try self.compileExpr(n.expr);
                 try self.emit(.pop);
             },
+            .text_line => |n| try self.compileTextLine(n),
+            .speaker_directive => |n| try self.compileSpeakerDirective(n),
+            .wait_directive => |n| try self.compileWaitDirective(n),
+            .clear_directive => |n| try self.compileClearDirective(n),
             else => {
                 // Expression nodes shouldn't appear at statement level
                 try self.compileExpr(idx);
             },
         }
+    }
+
+    fn compileTextLine(self: *Compiler, line: ast.TextLine) !void {
+        self.addDebugLine(line.span.start.line);
+
+        // Push speaker (or null).
+        if (self.current_speaker) |s| {
+            const idx = try self.addStringConstant(s);
+            try self.emitWithU16(.push_const, idx);
+        } else {
+            try self.emit(.push_null);
+        }
+
+        // Build the composite text on the stack.
+        if (line.segments.len == 0) {
+            const idx = try self.addStringConstant("");
+            try self.emitWithU16(.push_const, idx);
+        } else {
+            try self.compileTextSegment(line.segments[0]);
+            for (line.segments[1..]) |seg| {
+                try self.compileTextSegment(seg);
+                try self.emit(.add);
+            }
+        }
+
+        try self.emit(.emit_text);
+    }
+
+    fn compileTextSegment(self: *Compiler, seg: ast.TextSegment) !void {
+        switch (seg) {
+            .text => |s| {
+                const idx = try self.addStringConstant(s);
+                try self.emitWithU16(.push_const, idx);
+            },
+            .expr => |e| {
+                try self.compileExpr(e);
+                try self.emit(.to_str);
+            },
+        }
+    }
+
+    fn compileSpeakerDirective(self: *Compiler, d: ast.SpeakerDirective) !void {
+        self.addDebugLine(d.span.start.line);
+        self.current_speaker = d.name;
+        const idx = try self.addStringConstant(d.name);
+        try self.emitWithU16(.push_const, idx);
+        try self.emit(.emit_speaker);
+    }
+
+    fn compileWaitDirective(self: *Compiler, d: ast.WaitDirective) !void {
+        self.addDebugLine(d.span.start.line);
+        try self.emitWithU32(.emit_wait, d.ms);
+    }
+
+    fn compileClearDirective(self: *Compiler, d: ast.ClearDirective) !void {
+        self.addDebugLine(d.span.start.line);
+        try self.emit(.emit_text_clear);
     }
 
     fn compileLetStmt(self: *Compiler, stmt: ast.LetStmt) !void {
@@ -719,6 +784,12 @@ pub const Compiler = struct {
     fn emitWithU16(self: *Compiler, op: OpCode, operand: u16) !void {
         try self.emit(op);
         const bytes = std.mem.toBytes(std.mem.nativeToLittle(u16, operand));
+        self.bytecode.appendSlice(self.allocator, &bytes) catch return error.OutOfMemory;
+    }
+
+    fn emitWithU32(self: *Compiler, op: OpCode, operand: u32) !void {
+        try self.emit(op);
+        const bytes = std.mem.toBytes(std.mem.nativeToLittle(u32, operand));
         self.bytecode.appendSlice(self.allocator, &bytes) catch return error.OutOfMemory;
     }
 
