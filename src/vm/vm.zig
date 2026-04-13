@@ -946,6 +946,124 @@ test "VM: resume invalidates prior event" {
     try std.testing.expectEqualStrings("b", e2.?.text_display.text);
 }
 
+// Compile a scenario source and execute it, collecting emitted events
+// along with a simple auto-response policy. Returns an owned slice of
+// event tag names (arena-backed).
+fn runScenarioCollect(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !std.ArrayList([]const u8) {
+    const diagnostic = @import("../compiler/diagnostic.zig");
+    const ast_mod = @import("../compiler/ast.zig");
+    const lexer_mod = @import("../compiler/lexer.zig");
+    const parser_mod = @import("../compiler/parser.zig");
+    const codegen_mod = @import("../compiler/codegen.zig");
+
+    var diags = diagnostic.DiagnosticList.init(allocator);
+    var nodes = ast_mod.NodeStore.init(allocator);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .scenario);
+    var parser = parser_mod.Parser.init(allocator, &lexer, &nodes, &diags);
+    const root = try parser.parseProgram();
+    if (diags.hasErrors()) return error.ParseError;
+
+    var compiler = codegen_mod.Compiler.init(allocator, &nodes, &diags);
+    const module = try compiler.compile(root);
+    if (diags.hasErrors()) return error.CompileError;
+
+    var vm = VM.init(allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    var tags: std.ArrayList([]const u8) = .empty;
+    while (true) {
+        const evt_opt = try vm.runUntilEvent();
+        const evt = evt_opt orelse break;
+        try tags.append(allocator, @tagName(@as(event_mod.EventTag, evt)));
+        const response: Response = switch (evt) {
+            .choice_prompt => .{ .choice_selected = 0 },
+            .text_display => .{ .text_ack = {} },
+            .wait => .{ .wait_completed = {} },
+            else => .{ .none = {} },
+        };
+        vm.resumeWith(response);
+    }
+    return tags;
+}
+
+test "integration: greeting scenario emits expected event sequence" {
+    // Mirror of tests/fixtures/greeting.neru kept inline because @embedFile
+    // cannot reach outside the module root.
+    const source =
+        \\@speaker Alice
+        \\Hello, traveler.
+        \\@wait 500
+        \\How are you today?
+        \\@clear
+        \\@speaker Bob
+        \\Just passing through.
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tags = try runScenarioCollect(arena.allocator(), source);
+
+    const expected = [_][]const u8{
+        "speaker_change", // @speaker Alice
+        "text_display", // "Hello, traveler."
+        "wait", // @wait 500
+        "text_display", // "How are you today?"
+        "text_clear", // @clear
+        "speaker_change", // @speaker Bob
+        "text_display", // "Just passing through."
+    };
+    try std.testing.expectEqual(expected.len, tags.items.len);
+    for (expected, tags.items) |want, got| {
+        try std.testing.expectEqualStrings(want, got);
+    }
+}
+
+test "integration: text line carries compile-time speaker" {
+    const source =
+        \\@speaker Alice
+        \\Hello
+        \\
+    ;
+    const diagnostic = @import("../compiler/diagnostic.zig");
+    const ast_mod = @import("../compiler/ast.zig");
+    const lexer_mod = @import("../compiler/lexer.zig");
+    const parser_mod = @import("../compiler/parser.zig");
+    const codegen_mod = @import("../compiler/codegen.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var diags = diagnostic.DiagnosticList.init(allocator);
+    var nodes = ast_mod.NodeStore.init(allocator);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .scenario);
+    var parser = parser_mod.Parser.init(allocator, &lexer, &nodes, &diags);
+    const root = try parser.parseProgram();
+    try std.testing.expect(!diags.hasErrors());
+
+    var compiler = codegen_mod.Compiler.init(allocator, &nodes, &diags);
+    const module = try compiler.compile(root);
+    try std.testing.expect(!diags.hasErrors());
+
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    // First event: speaker_change.
+    const e1 = try vm.runUntilEvent();
+    try std.testing.expectEqualStrings("Alice", e1.?.speaker_change.speaker.?);
+    vm.resumeWith(.{ .none = {} });
+
+    // Second event: text_display, speaker should be Alice.
+    const e2 = try vm.runUntilEvent();
+    try std.testing.expectEqualStrings("Alice", e2.?.text_display.speaker.?);
+    try std.testing.expectEqualStrings("Hello", e2.?.text_display.text);
+}
+
 test "VM: source line lookup" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
