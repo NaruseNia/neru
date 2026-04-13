@@ -1,5 +1,8 @@
 const std = @import("std");
 const token = @import("token.zig");
+const event = @import("../runtime/event.zig");
+
+pub const DirectiveKind = event.DirectiveKind;
 
 pub const Span = token.Span;
 pub const NodeIndex = u32;
@@ -24,6 +27,7 @@ pub const Node = union(enum) {
     speaker_directive: SpeakerDirective,
     wait_directive: WaitDirective,
     clear_directive: ClearDirective,
+    media_directive: MediaDirective,
 
     // Expressions
     binary_expr: BinaryExpr,
@@ -55,6 +59,7 @@ pub const Node = union(enum) {
             .speaker_directive => |n| n.span,
             .wait_directive => |n| n.span,
             .clear_directive => |n| n.span,
+            .media_directive => |n| n.span,
             .binary_expr => |n| n.span,
             .unary_expr => |n| n.span,
             .call_expr => |n| n.span,
@@ -169,6 +174,31 @@ pub const WaitDirective = struct {
 };
 
 pub const ClearDirective = struct {
+    span: Span,
+};
+
+/// Literal value for a directive option (--key=value).
+pub const OptionValue = union(enum) {
+    int: i64,
+    float: f64,
+    string: []const u8,
+    /// Bare identifier (e.g. `slow`, `center`) — treated as a symbolic string.
+    ident: []const u8,
+    bool_val: bool,
+};
+
+pub const DirectiveOption = struct {
+    key: []const u8,
+    value: OptionValue,
+};
+
+/// Shared node for @bg, @show, @hide, @bgm, @bgm_stop, @se, @transition.
+/// `primary` is the positional argument (image path, character, track, etc.)
+/// and is null only for @bgm_stop.
+pub const MediaDirective = struct {
+    kind: DirectiveKind,
+    primary: ?[]const u8,
+    options: []const DirectiveOption,
     span: Span,
 };
 
