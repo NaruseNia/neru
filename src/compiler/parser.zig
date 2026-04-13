@@ -110,6 +110,13 @@ pub const Parser = struct {
         if (std.mem.eql(u8, name, "clear")) {
             return self.parseClearDirective(start);
         }
+        if (std.mem.eql(u8, name, "bg")) return self.parseMediaDirective(start, .bg, .required);
+        if (std.mem.eql(u8, name, "show")) return self.parseMediaDirective(start, .sprite_show, .required);
+        if (std.mem.eql(u8, name, "hide")) return self.parseMediaDirective(start, .sprite_hide, .required);
+        if (std.mem.eql(u8, name, "bgm")) return self.parseMediaDirective(start, .bgm_play, .required);
+        if (std.mem.eql(u8, name, "bgm_stop")) return self.parseMediaDirective(start, .bgm_stop, .none);
+        if (std.mem.eql(u8, name, "se")) return self.parseMediaDirective(start, .se_play, .required);
+        if (std.mem.eql(u8, name, "transition")) return self.parseMediaDirective(start, .transition, .required);
         self.reportErrorFmt("unknown directive '@{s}'", .{name});
         // Skip to end of line to recover.
         while (self.current.tag != .newline and self.current.tag != .eof) {
@@ -167,6 +174,113 @@ pub const Parser = struct {
         return self.addNode(.{ .clear_directive = .{
             .span = self.spanFrom(start),
         } });
+    }
+
+    const PrimaryKind = enum { required, none };
+
+    fn parseMediaDirective(
+        self: *Parser,
+        start: token_mod.SourceLocation,
+        kind: ast.DirectiveKind,
+        primary_kind: PrimaryKind,
+    ) ParseError!NodeIndex {
+        var primary: ?[]const u8 = null;
+        if (primary_kind == .required) {
+            primary = switch (self.current.tag) {
+                .identifier, .text_chunk => blk: {
+                    const s = self.current.lexeme;
+                    self.advance();
+                    break :blk s;
+                },
+                .string_literal => blk: {
+                    const lex = self.current.lexeme;
+                    const s = if (lex.len >= 2) lex[1 .. lex.len - 1] else lex;
+                    self.advance();
+                    break :blk s;
+                },
+                else => {
+                    self.reportError("expected positional argument for directive");
+                    return error.UnexpectedToken;
+                },
+            };
+        }
+
+        var options: std.ArrayList(ast.DirectiveOption) = .empty;
+        defer options.deinit(self.allocator);
+
+        while (self.current.tag == .dashdash) {
+            const opt = try self.parseDirectiveOption();
+            options.append(self.allocator, opt) catch return error.OutOfMemory;
+        }
+
+        try self.expectNewlineOrEof();
+
+        const owned = self.allocator.dupe(ast.DirectiveOption, options.items) catch return error.OutOfMemory;
+        return self.addNode(.{ .media_directive = .{
+            .kind = kind,
+            .primary = primary,
+            .options = owned,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseDirectiveOption(self: *Parser) ParseError!ast.DirectiveOption {
+        try self.expect(.dashdash);
+        if (self.current.tag != .identifier) {
+            self.reportError("expected option name after '--'");
+            return error.UnexpectedToken;
+        }
+        const key = self.current.lexeme;
+        self.advance();
+        try self.expect(.assign);
+        const value = try self.parseOptionValue();
+        return .{ .key = key, .value = value };
+    }
+
+    fn parseOptionValue(self: *Parser) ParseError!ast.OptionValue {
+        switch (self.current.tag) {
+            .int_literal => {
+                const lex = self.current.lexeme;
+                const v = parseIntValue(lex) catch {
+                    self.reportError("invalid integer option value");
+                    return error.UnexpectedToken;
+                };
+                self.advance();
+                return .{ .int = v };
+            },
+            .float_literal => {
+                const lex = self.current.lexeme;
+                const v = std.fmt.parseFloat(f64, lex) catch {
+                    self.reportError("invalid float option value");
+                    return error.UnexpectedToken;
+                };
+                self.advance();
+                return .{ .float = v };
+            },
+            .string_literal => {
+                const lex = self.current.lexeme;
+                const s = if (lex.len >= 2) lex[1 .. lex.len - 1] else lex;
+                self.advance();
+                return .{ .string = s };
+            },
+            .kw_true => {
+                self.advance();
+                return .{ .bool_val = true };
+            },
+            .kw_false => {
+                self.advance();
+                return .{ .bool_val = false };
+            },
+            .identifier => {
+                const s = self.current.lexeme;
+                self.advance();
+                return .{ .ident = s };
+            },
+            else => {
+                self.reportError("expected literal option value");
+                return error.UnexpectedToken;
+            },
+        }
     }
 
     fn parseTextLine(self: *Parser) ParseError!NodeIndex {
