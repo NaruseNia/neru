@@ -95,6 +95,12 @@ pub const Lexer = struct {
             if (c == '@') {
                 return self.readDirective(start);
             }
+            if (c == '#') {
+                return self.readHashLabel(start);
+            }
+            if (c == '-' and self.peek() != null and self.peek().? != '-' and self.peek().? != '>' and self.peek().? != '=') {
+                return self.makeTokenWithLexeme(.dash_bullet, start, self.source[start.offset..self.pos]);
+            }
             // Any other first char begins a scenario text line.
             self.in_text_line = true;
             return self.readTextChunk(start);
@@ -127,6 +133,22 @@ pub const Lexer = struct {
 
         // Operators and delimiters
         return self.readOperator(c, start);
+    }
+
+    /// Read a scenario label/choice tag after the leading '#' has been consumed.
+    fn readHashLabel(self: *Lexer, start: SourceLocation) Token {
+        const name_start = self.pos;
+        while (!self.isAtEnd() and isAlphaNumeric(self.peek().?)) {
+            _ = self.advance();
+        }
+        if (self.pos == name_start) {
+            self.diagnostics.addError(.lexer, .{
+                .start = start,
+                .end = self.currentLocation(),
+            }, "expected label name after '#'");
+            return self.makeTokenWithLexeme(.invalid, start, self.source[start.offset..self.pos]);
+        }
+        return self.makeTokenWithLexeme(.hash_label, start, self.source[name_start..self.pos]);
     }
 
     /// Read a scenario directive after the leading '@' has been consumed.

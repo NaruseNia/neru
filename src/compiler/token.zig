@@ -84,6 +84,8 @@ pub const Tag = enum {
 
     // Scenario
     at_directive, // '@name' — lexeme is the name without '@'
+    hash_label, // '#name' — lexeme is the name without '#'
+    dash_bullet, // '-' at start of a scenario line (e.g. inside #choice)
     text_chunk, // plain text segment inside a scenario text line
 
     // Special
@@ -148,6 +150,8 @@ pub const Tag = enum {
             .colon => ":",
             .arrow => "->",
             .at_directive => "<@directive>",
+            .hash_label => "<#label>",
+            .dash_bullet => "<-bullet>",
             .text_chunk => "<text>",
             .newline => "<newline>",
             .eof => "<eof>",
