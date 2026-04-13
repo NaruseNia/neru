@@ -515,7 +515,7 @@ fn compileAndRun(source: []const u8) !?Value {
 
     var diags = diagnostic.DiagnosticList.init(allocator);
     var nodes = ast.NodeStore.init(allocator);
-    var lexer = lexer_mod.Lexer.init(source, &diags);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .logic);
     var parser = parser_mod.Parser.init(allocator, &lexer, &nodes, &diags);
     const root = try parser.parseProgram();
 
@@ -547,7 +547,7 @@ fn runAndGetLocal(source: []const u8, local_slot: u32) !Value {
 
     var diags = diagnostic.DiagnosticList.init(allocator);
     var nodes = ast_mod.NodeStore.init(allocator);
-    var lexer = lexer_mod.Lexer.init(source, &diags);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .logic);
     var parser = parser_mod.Parser.init(allocator, &lexer, &nodes, &diags);
     const root = try parser.parseProgram();
 

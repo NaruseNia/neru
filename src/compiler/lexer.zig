@@ -7,6 +7,15 @@ pub const Tag = token.Tag;
 pub const SourceLocation = token.SourceLocation;
 pub const Span = token.Span;
 
+pub const Mode = enum {
+    logic,
+    scenario,
+
+    pub fn fromPath(path: []const u8) Mode {
+        return if (std.mem.endsWith(u8, path, ".neru")) .scenario else .logic;
+    }
+};
+
 pub const Lexer = struct {
     source: []const u8,
     pos: u32,
@@ -14,8 +23,13 @@ pub const Lexer = struct {
     column: u32,
     diagnostics: *diagnostic.DiagnosticList,
     prev_was_newline: bool,
+    mode: Mode,
 
-    pub fn init(source: []const u8, diagnostics: *diagnostic.DiagnosticList) Lexer {
+    pub fn init(
+        source: []const u8,
+        diagnostics: *diagnostic.DiagnosticList,
+        initial_mode: Mode,
+    ) Lexer {
         return .{
             .source = source,
             .pos = 0,
@@ -23,6 +37,7 @@ pub const Lexer = struct {
             .column = 1,
             .diagnostics = diagnostics,
             .prev_was_newline = false,
+            .mode = initial_mode,
         };
     }
 
@@ -421,7 +436,7 @@ fn isAlphaNumeric(c: u8) bool {
 
 fn collectTokens(source: []const u8, allocator: std.mem.Allocator) !struct { tokens: std.ArrayList(Token), diags: diagnostic.DiagnosticList } {
     var diags = diagnostic.DiagnosticList.init(allocator);
-    var lexer = Lexer.init(source, &diags);
+    var lexer = Lexer.init(source, &diags, .logic);
     var tokens: std.ArrayList(Token) = .empty;
 
     while (true) {

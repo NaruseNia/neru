@@ -754,7 +754,7 @@ fn parseSource(source: []const u8, allocator: std.mem.Allocator) !struct {
 } {
     var diags = diagnostic.DiagnosticList.init(allocator);
     var nodes = ast.NodeStore.init(allocator);
-    var lexer = lexer_mod.Lexer.init(source, &diags);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .logic);
     var parser = Parser.init(allocator, &lexer, &nodes, &diags);
 
     const root = try parser.parseProgram();

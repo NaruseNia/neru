@@ -861,7 +861,7 @@ fn compileSource(source: []const u8) !TestContext {
     var diags = diagnostic.DiagnosticList.init(allocator);
     var nodes = ast.NodeStore.init(allocator);
 
-    var lexer = @import("lexer.zig").Lexer.init(source, &diags);
+    var lexer = @import("lexer.zig").Lexer.init(source, &diags, .logic);
     var parser = @import("parser.zig").Parser.init(allocator, &lexer, &nodes, &diags);
     const root = try parser.parseProgram();
 

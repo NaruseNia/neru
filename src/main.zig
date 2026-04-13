@@ -92,7 +92,7 @@ fn compileFile(
     var nodes = NodeStore.init(allocator);
 
     // Lex + Parse
-    var lexer = Lexer.init(source, &diags);
+    var lexer = Lexer.init(source, &diags, .logic);
     var parser = Parser.init(allocator, &lexer, &nodes, &diags);
     const root = parser.parseProgram() catch {
         try diags.format(file_path, stderr);
@@ -157,7 +157,7 @@ fn runFile(
     var nodes = NodeStore.init(allocator);
 
     // Lex + Parse
-    var lexer = Lexer.init(source, &diags);
+    var lexer = Lexer.init(source, &diags, .logic);
     var parser = Parser.init(allocator, &lexer, &nodes, &diags);
     const root = parser.parseProgram() catch {
         try diags.format(file_path, stderr);
