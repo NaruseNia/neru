@@ -345,6 +345,10 @@ pub const VM = struct {
                     self.ip += 1;
                     try self.emitChoice(count);
                 },
+                .emit_text_clear => {
+                    self.pending_event = .{ .text_clear = {} };
+                    self.suspended = true;
+                },
 
                 .halt => {
                     if (self.stack.top > 0) {

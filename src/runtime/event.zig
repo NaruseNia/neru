@@ -5,6 +5,7 @@ const Value = value_mod.Value;
 
 pub const EventTag = enum {
     text_display,
+    text_clear,
     speaker_change,
     bg_change,
     sprite_show,
@@ -93,6 +94,7 @@ pub const DirectiveKind = enum(u8) {
 
 pub const Event = union(EventTag) {
     text_display: TextDisplay,
+    text_clear: void,
     speaker_change: SpeakerChange,
     bg_change: BgChange,
     sprite_show: SpriteShow,

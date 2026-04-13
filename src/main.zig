@@ -218,6 +218,10 @@ fn runMock(vm: *VM, stdout: anytype, stderr: anytype) !void {
 
 fn renderMockEvent(evt: Event, stdout: anytype) !Response {
     switch (evt) {
+        .text_clear => {
+            try stdout.print("[clear]\n", .{});
+            return .{ .none = {} };
+        },
         .text_display => |td| {
             if (td.speaker) |s| {
                 try stdout.print("[text] {s}: {s}\n", .{ s, td.text });

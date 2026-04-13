@@ -53,6 +53,7 @@ pub const OpCode = enum(u8) {
     emit_save_point = 0x73,
     emit_directive = 0x74,
     emit_choice = 0x75,
+    emit_text_clear = 0x76,
 
     // Special
     halt = 0xFF,
