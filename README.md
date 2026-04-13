@@ -17,7 +17,7 @@ Designed with a two-layer architecture so both scenario writers and programmers 
 Download the latest binary from [Releases](https://github.com/NaruseNia/neru/releases/latest), then:
 
 ```sh
-# Write a script
+# Logic-only script
 cat <<'EOF' > hello.nerul
 fn fib(n) {
   if n <= 1 { return n }
@@ -26,38 +26,90 @@ fn fib(n) {
 let result = fib(10)
 EOF
 
-# Run it
 neru run hello.nerul
 # => 55
 
-# Or compile to bytecode
+# Scenario script — use --mock to drive the built-in auto-responder
+cat <<'EOF' > hello.neru
+@speaker Alice
+Hello, traveler!
+@wait 500
+Where are you heading today?
+EOF
+
+neru run --mock hello.neru
+# => [speaker] Alice
+#    [text] Alice: Hello, traveler!
+#    [wait] 500ms
+#    [text] Alice: Where are you heading today?
+
+# Compile to bytecode
 neru compile hello.nerul
 # => hello.neruc
 ```
 
+More runnable examples live under [`examples/`](examples/README.md).
+
 ## Features
 
-- **Scenario Layer** (`.neru`) — Markdown-extended syntax. Plain text becomes dialogue as-is *(Phase 2)*
-- **Logic Layer** (`.nerul`) — Custom scripting language for game logic
-- **Bytecode VM** — Stack-based virtual machine implemented in Zig
-- **Loosely Coupled** — Outputs engine-independent intermediate representation
-- **Internationalization (i18n)** — Multi-language support at the language level *(Phase 4)*
-- **Cross-platform** — Linux, macOS, Windows binaries available
+- **Scenario Layer** (`.neru`) — Text lines, `@speaker`/`@wait`/`@clear`, `@bg`/`@show`/`@bgm`/`@se`/`@transition` with `--key=value` options, `#label` + `@goto`, `#choice` with conditional entries, `@if`/`@elif`/`@else`/`@end`, `@call`/`@eval`, and `{expression}` interpolation
+- **Logic Layer** (`.nerul`) — Expressions, `let`, `fn`, `if`/`else`, `for`/`while`, `break`/`continue`, recursive calls, compound assignments
+- **Bytecode VM** — Stack-based virtual machine implemented in Zig. Emits engine-independent events (text, choices, effects) instead of executing them directly
+- **Mock Engine** — `neru run --mock` drives a script end-to-end without an engine, auto-acking events and printing them to stdout
+- **Cross-platform** — Linux, macOS, Windows binaries are shipped from CI
+
+### What's still coming
+
+- Arrays, maps, closures, modules (Phase 3)
+- State management, save/load, macros, i18n (Phase 4)
+- LSP, debugger, formatter (Phase 5)
 
 ## Examples
 
-### Logic (.nerul) — Available Now
+### Scenario (`.neru`)
 
 ```
-let x = 42
-let name = "neru"
+@bg forest.png --fade=slow
+@bgm theme.ogg --volume=0.8
+@show taro --pos=center
 
+@speaker Taro
+It's quiet in the forest today.
+@wait 500
+
+#choice
+  - "Call out" -> call
+  - "Stay silent" -> silent
+  - "Secret option" -> secret @if 1 == 1
+
+#call
+@speaker Taro
+Hello!
+@goto done
+
+#silent
+@speaker Narrator
+(Taro keeps walking.)
+@goto done
+
+#secret
+@speaker Narrator
+You unlocked the hidden branch.
+@goto done
+
+#done
+@bgm_stop
+```
+
+### Logic (`.nerul`)
+
+```
 fn factorial(n) {
   if n <= 1 { return 1 }
   return n * factorial(n - 1)
 }
 
-let result = factorial(5)  // 120
+let x = factorial(5)  // 120
 
 for i in 0..10 {
   // loop body
@@ -68,20 +120,6 @@ while x > 0 {
 }
 ```
 
-### Scenario (.neru) — Coming in Phase 2
-
-```
-@speaker Taro
-@bg schoolyard.png --fade 500
-
-"Hello, my name is {state.player_name}"
-"Nice weather today, isn't it?"
-
-#choice
-  - "Yeah, it is" -> good_route
-  - "Is it though?" -> bad_route
-```
-
 ## Build from Source
 
 Requires [Zig](https://ziglang.org/) 0.15.2+.
@@ -89,20 +127,49 @@ Requires [Zig](https://ziglang.org/) 0.15.2+.
 ```sh
 zig build              # Build
 zig build run          # Build and run CLI
-zig build test         # Run all tests (104 tests)
+zig build test         # Run all tests
 ```
 
-### Zig Library
+## Use as a Zig library
 
-neru can be used as a Zig library:
+### Add the dependency
+
+Fetch the package into your project's `build.zig.zon`:
+
+```sh
+zig fetch --save=neru git+https://github.com/NaruseNia/neru#v0.2.0
+```
+
+Then wire the module into `build.zig`:
+
+```zig
+const neru_dep = b.dependency("neru", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("neru", neru_dep.module("neru"));
+```
+
+### Usage
 
 ```zig
 const neru = @import("neru");
 
-var vm = neru.vm.VM.init(allocator);
-var lexer = neru.compiler.Lexer.init(source, &diags);
+// Compile
+var diags = neru.compiler.DiagnosticList.init(allocator);
+var nodes = neru.compiler.NodeStore.init(allocator);
+var lexer = neru.compiler.Lexer.init(source, &diags, .scenario); // or .logic
 var parser = neru.compiler.Parser.init(allocator, &lexer, &nodes, &diags);
-// ...
+const root = try parser.parseProgram();
+
+var compiler = neru.compiler.Compiler.init(allocator, &nodes, &diags);
+const module = try compiler.compile(root);
+
+// Run in event-driven mode (scenario-friendly)
+var vm = neru.vm.VM.init(allocator);
+defer vm.deinit();
+vm.load(module);
+while (try vm.runUntilEvent()) |event| {
+    // handle event and send a Response back
+    vm.resumeWith(.{ .none = {} });
+}
 ```
 
 ## Documentation
@@ -118,7 +185,7 @@ var parser = neru.compiler.Parser.init(allocator, &lexer, &nodes, &diags);
 | Phase | Status | Description |
 |---|---|---|
 | 1. Core Foundation | Done | Lexer, Parser, Codegen, VM, CLI |
-| 2. Scenario Layer | Next | Text display, choices, directives, events |
+| 2. Scenario Layer | Done | Text, speakers, media directives, flow control, conditionals, events |
 | 3. Logic Layer | Planned | Arrays, maps, closures, modules |
 | 4. Integration | Planned | State management, save/load, macros, i18n |
 | 5. Developer Tools | Planned | LSP, debugger, formatter |
