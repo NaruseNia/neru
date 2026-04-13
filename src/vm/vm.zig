@@ -9,6 +9,9 @@ const OpCode = opcodes_mod.OpCode;
 const Value = value_mod.Value;
 const Event = event_mod.Event;
 const Response = event_mod.Response;
+const DirectiveArg = event_mod.DirectiveArg;
+const DirectiveKind = event_mod.DirectiveKind;
+const ChoiceOption = event_mod.ChoiceOption;
 const CompiledModule = codegen.CompiledModule;
 const Constant = codegen.Constant;
 const FunctionEntry = codegen.FunctionEntry;
@@ -57,6 +60,7 @@ pub const VM = struct {
     pending_event: ?Event = null,
     final_value: ?Value = null,
     last_response: Response = .{ .none = {} },
+    event_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) VM {
         return .{
@@ -68,12 +72,14 @@ pub const VM = struct {
             .functions = &.{},
             .debug_lines = &.{},
             .allocator = allocator,
+            .event_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
     pub fn deinit(self: *VM) void {
         for (self.allocated_strings.items) |s| self.allocator.free(s);
         self.allocated_strings.deinit(self.allocator);
+        self.event_arena.deinit();
     }
 
     pub fn load(self: *VM, module: CompiledModule) void {
@@ -116,10 +122,12 @@ pub const VM = struct {
 
     /// Continue execution after an event, optionally passing a response.
     /// The response may influence future behavior (e.g., choice selection).
+    /// After this call, any previously-returned Event is invalidated.
     pub fn resumeWith(self: *VM, response: Response) void {
         self.last_response = response;
         self.pending_event = null;
         self.suspended = false;
+        _ = self.event_arena.reset(.retain_capacity);
     }
 
     fn runLoop(self: *VM) VMError!void {
@@ -300,6 +308,44 @@ pub const VM = struct {
                     return error.RuntimeError;
                 },
 
+                .emit_text => {
+                    const text = try self.popString();
+                    const speaker = try self.popStringOrNull();
+                    self.pending_event = .{ .text_display = .{
+                        .speaker = speaker,
+                        .text = text,
+                    } };
+                    self.suspended = true;
+                },
+                .emit_speaker => {
+                    const speaker = try self.popStringOrNull();
+                    self.pending_event = .{ .speaker_change = .{ .speaker = speaker } };
+                    self.suspended = true;
+                },
+                .emit_wait => {
+                    const ms = self.readU32();
+                    self.pending_event = .{ .wait = .{ .ms = ms } };
+                    self.suspended = true;
+                },
+                .emit_save_point => {
+                    const name = try self.popString();
+                    self.pending_event = .{ .save_point = .{ .name = name } };
+                    self.suspended = true;
+                },
+                .emit_directive => {
+                    const kind_byte = self.bytecode[self.ip];
+                    self.ip += 1;
+                    const arg_count = self.bytecode[self.ip];
+                    self.ip += 1;
+                    const kind: DirectiveKind = @enumFromInt(kind_byte);
+                    try self.emitDirective(kind, arg_count);
+                },
+                .emit_choice => {
+                    const count = self.bytecode[self.ip];
+                    self.ip += 1;
+                    try self.emitChoice(count);
+                },
+
                 .halt => {
                     if (self.stack.top > 0) {
                         self.final_value = self.pop() catch null;
@@ -372,6 +418,67 @@ pub const VM = struct {
         const val = std.mem.readInt(i32, self.bytecode[self.ip..][0..4], .little);
         self.ip += 4;
         return val;
+    }
+
+    fn readU32(self: *VM) u32 {
+        const val = std.mem.readInt(u32, self.bytecode[self.ip..][0..4], .little);
+        self.ip += 4;
+        return val;
+    }
+
+    fn popString(self: *VM) VMError![]const u8 {
+        const v = try self.pop();
+        return switch (v) {
+            .string => |s| s,
+            else => error.TypeError,
+        };
+    }
+
+    fn popStringOrNull(self: *VM) VMError!?[]const u8 {
+        const v = try self.pop();
+        return switch (v) {
+            .string => |s| s,
+            .null_val => null,
+            else => error.TypeError,
+        };
+    }
+
+    fn emitDirective(self: *VM, kind: DirectiveKind, arg_count: u8) VMError!void {
+        const arena = self.event_arena.allocator();
+        var args: []DirectiveArg = &.{};
+        if (arg_count > 0) {
+            args = arena.alloc(DirectiveArg, arg_count) catch return error.RuntimeError;
+            var i: usize = arg_count;
+            while (i > 0) : (i -= 1) {
+                const val = try self.pop();
+                const key = try self.popString();
+                args[i - 1] = .{ .key = key, .value = val };
+            }
+        }
+
+        self.pending_event = switch (kind) {
+            .bg => .{ .bg_change = .{ .image = try self.popString(), .args = args } },
+            .sprite_show => .{ .sprite_show = .{ .character = try self.popString(), .args = args } },
+            .sprite_hide => .{ .sprite_hide = .{ .character = try self.popString(), .args = args } },
+            .bgm_play => .{ .bgm_play = .{ .track = try self.popString(), .args = args } },
+            .bgm_stop => .{ .bgm_stop = {} },
+            .se_play => .{ .se_play = .{ .sound = try self.popString(), .args = args } },
+            .transition => .{ .transition = .{ .kind = try self.popString(), .args = args } },
+        };
+        self.suspended = true;
+    }
+
+    fn emitChoice(self: *VM, count: u8) VMError!void {
+        const arena = self.event_arena.allocator();
+        const options = arena.alloc(ChoiceOption, count) catch return error.RuntimeError;
+        var i: usize = count;
+        while (i > 0) : (i -= 1) {
+            const target = try self.popString();
+            const label = try self.popString();
+            options[i - 1] = .{ .label = label, .target = target };
+        }
+        self.pending_event = .{ .choice_prompt = .{ .options = options } };
+        self.suspended = true;
     }
 
     pub fn currentSourceLine(self: *const VM) u32 {
@@ -608,6 +715,208 @@ test "VM: string literal" {
 test "VM: null" {
     const val = try runAndGetLocal("let x = null\n", 0);
     try std.testing.expect(val == .null_val);
+}
+
+// ---- EMIT opcode tests ----
+
+// Build a minimal CompiledModule with a single main function (function 0,
+// zero arity, zero locals) whose body is the provided bytecode.
+fn buildEmitModule(
+    allocator: std.mem.Allocator,
+    constants: []const Constant,
+    bytecode: []const u8,
+) !CompiledModule {
+    const bc_copy = try allocator.dupe(u8, bytecode);
+    const functions = try allocator.alloc(FunctionEntry, 1);
+    functions[0] = .{
+        .name_idx = 0,
+        .arity = 0,
+        .bytecode_offset = 0,
+        .local_count = 0,
+    };
+    return .{
+        .bytecode = bc_copy,
+        .constants = constants,
+        .functions = functions,
+        .debug_lines = &.{},
+    };
+}
+
+test "VM: emit_text produces text_display event" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Constants: 0="Alice", 1="Hello"
+    const constants = [_]Constant{
+        .{ .string = "Alice" },
+        .{ .string = "Hello" },
+    };
+
+    // Bytecode: push_const 0 (speaker), push_const 1 (text), emit_text, halt
+    const bc = [_]u8{
+        @intFromEnum(OpCode.push_const), 0, 0,
+        @intFromEnum(OpCode.push_const), 1, 0,
+        @intFromEnum(OpCode.emit_text),
+        @intFromEnum(OpCode.halt),
+    };
+
+    const module = try buildEmitModule(allocator, &constants, &bc);
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const evt = try vm.runUntilEvent();
+    try std.testing.expect(evt != null);
+    try std.testing.expectEqual(event_mod.EventTag.text_display, @as(event_mod.EventTag, evt.?));
+    try std.testing.expectEqualStrings("Alice", evt.?.text_display.speaker.?);
+    try std.testing.expectEqualStrings("Hello", evt.?.text_display.text);
+
+    vm.resumeWith(.{ .text_ack = {} });
+    const next = try vm.runUntilEvent();
+    try std.testing.expect(next == null); // reaches halt
+}
+
+test "VM: emit_text with null speaker" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const constants = [_]Constant{.{ .string = "narration" }};
+    const bc = [_]u8{
+        @intFromEnum(OpCode.push_null),
+        @intFromEnum(OpCode.push_const), 0, 0,
+        @intFromEnum(OpCode.emit_text),
+        @intFromEnum(OpCode.halt),
+    };
+
+    const module = try buildEmitModule(allocator, &constants, &bc);
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const evt = try vm.runUntilEvent();
+    try std.testing.expect(evt != null);
+    try std.testing.expect(evt.?.text_display.speaker == null);
+    try std.testing.expectEqualStrings("narration", evt.?.text_display.text);
+}
+
+test "VM: emit_wait carries ms operand" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // emit_wait 500ms, halt
+    const bc = [_]u8{
+        @intFromEnum(OpCode.emit_wait), 0xF4, 0x01, 0x00, 0x00, // 500
+        @intFromEnum(OpCode.halt),
+    };
+
+    const module = try buildEmitModule(allocator, &.{}, &bc);
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const evt = try vm.runUntilEvent();
+    try std.testing.expect(evt != null);
+    try std.testing.expectEqual(@as(u32, 500), evt.?.wait.ms);
+}
+
+test "VM: emit_directive bg with args" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // bg "forest.png" fade=...  → push image, push key, push value, emit_directive
+    const constants = [_]Constant{
+        .{ .string = "forest.png" },
+        .{ .string = "fade" },
+        .{ .string = "slow" },
+    };
+    const bc = [_]u8{
+        @intFromEnum(OpCode.push_const), 0, 0, // image
+        @intFromEnum(OpCode.push_const), 1, 0, // key
+        @intFromEnum(OpCode.push_const), 2, 0, // value
+        @intFromEnum(OpCode.emit_directive),
+        @intFromEnum(DirectiveKind.bg),
+        1, // arg_count
+        @intFromEnum(OpCode.halt),
+    };
+
+    const module = try buildEmitModule(allocator, &constants, &bc);
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const evt = try vm.runUntilEvent();
+    try std.testing.expect(evt != null);
+    try std.testing.expectEqual(event_mod.EventTag.bg_change, @as(event_mod.EventTag, evt.?));
+    try std.testing.expectEqualStrings("forest.png", evt.?.bg_change.image);
+    try std.testing.expectEqual(@as(usize, 1), evt.?.bg_change.args.len);
+    try std.testing.expectEqualStrings("fade", evt.?.bg_change.args[0].key);
+    try std.testing.expectEqualStrings("slow", evt.?.bg_change.args[0].value.string);
+}
+
+test "VM: emit_choice builds options list" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const constants = [_]Constant{
+        .{ .string = "Attack" }, .{ .string = "attack_label" },
+        .{ .string = "Defend" }, .{ .string = "defend_label" },
+    };
+    const bc = [_]u8{
+        @intFromEnum(OpCode.push_const), 0, 0,
+        @intFromEnum(OpCode.push_const), 1, 0,
+        @intFromEnum(OpCode.push_const), 2, 0,
+        @intFromEnum(OpCode.push_const), 3, 0,
+        @intFromEnum(OpCode.emit_choice), 2,
+        @intFromEnum(OpCode.halt),
+    };
+
+    const module = try buildEmitModule(allocator, &constants, &bc);
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const evt = try vm.runUntilEvent();
+    try std.testing.expect(evt != null);
+    const opts = evt.?.choice_prompt.options;
+    try std.testing.expectEqual(@as(usize, 2), opts.len);
+    try std.testing.expectEqualStrings("Attack", opts[0].label);
+    try std.testing.expectEqualStrings("attack_label", opts[0].target);
+    try std.testing.expectEqualStrings("Defend", opts[1].label);
+    try std.testing.expectEqualStrings("defend_label", opts[1].target);
+}
+
+test "VM: resume invalidates prior event" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const constants = [_]Constant{ .{ .string = "a" }, .{ .string = "b" } };
+    const bc = [_]u8{
+        @intFromEnum(OpCode.push_null),
+        @intFromEnum(OpCode.push_const), 0, 0,
+        @intFromEnum(OpCode.emit_text),
+        @intFromEnum(OpCode.push_null),
+        @intFromEnum(OpCode.push_const), 1, 0,
+        @intFromEnum(OpCode.emit_text),
+        @intFromEnum(OpCode.halt),
+    };
+
+    const module = try buildEmitModule(allocator, &constants, &bc);
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const e1 = try vm.runUntilEvent();
+    try std.testing.expectEqualStrings("a", e1.?.text_display.text);
+    vm.resumeWith(.{ .text_ack = {} });
+
+    const e2 = try vm.runUntilEvent();
+    try std.testing.expectEqualStrings("b", e2.?.text_display.text);
 }
 
 test "VM: source line lookup" {

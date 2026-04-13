@@ -3,6 +3,7 @@ pub const Event = event.Event;
 pub const EventTag = event.EventTag;
 pub const Response = event.Response;
 pub const DirectiveArg = event.DirectiveArg;
+pub const DirectiveKind = event.DirectiveKind;
 pub const ChoiceOption = event.ChoiceOption;
 
 // Sub-modules for detailed access

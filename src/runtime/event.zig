@@ -79,6 +79,18 @@ pub const SavePoint = struct {
     name: []const u8,
 };
 
+/// Directive kinds used by the emit_directive opcode operand.
+/// Values are the stable byte encoding used in bytecode.
+pub const DirectiveKind = enum(u8) {
+    bg = 0,
+    sprite_show = 1,
+    sprite_hide = 2,
+    bgm_play = 3,
+    bgm_stop = 4,
+    se_play = 5,
+    transition = 6,
+};
+
 pub const Event = union(EventTag) {
     text_display: TextDisplay,
     speaker_change: SpeakerChange,
