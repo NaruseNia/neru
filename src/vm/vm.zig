@@ -61,6 +61,13 @@ pub const VM = struct {
     final_value: ?Value = null,
     last_response: Response = .{ .none = {} },
     event_arena: std.heap.ArenaAllocator,
+    /// When a choice_prompt event is suspended, this holds the relative
+    /// jump offsets (one per option). resumeWith() applies the selected
+    /// offset before clearing the arena.
+    pending_choice_offsets: ?[]const i32 = null,
+    /// IP at the point the choice offsets are measured from (right after the
+    /// emit_choice instruction's embedded offset table).
+    pending_choice_base_ip: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) VM {
         return .{
@@ -127,6 +134,20 @@ pub const VM = struct {
         self.last_response = response;
         self.pending_event = null;
         self.suspended = false;
+
+        // If we suspended on a choice_prompt, apply the selected jump before
+        // the arena is reset (offsets are arena-allocated).
+        if (self.pending_choice_offsets) |offsets| {
+            const selected: u32 = switch (response) {
+                .choice_selected => |i| i,
+                else => 0,
+            };
+            const idx: usize = if (selected < offsets.len) selected else 0;
+            const target: i64 = @as(i64, @intCast(self.pending_choice_base_ip)) + offsets[idx];
+            self.ip = @intCast(target);
+            self.pending_choice_offsets = null;
+        }
+
         _ = self.event_arena.reset(.retain_capacity);
     }
 
@@ -343,6 +364,15 @@ pub const VM = struct {
                 .emit_choice => {
                     const count = self.bytecode[self.ip];
                     self.ip += 1;
+                    // Read the in-stream offset table (count × i32).
+                    const arena = self.event_arena.allocator();
+                    const offsets = arena.alloc(i32, count) catch return error.RuntimeError;
+                    var i: usize = 0;
+                    while (i < count) : (i += 1) {
+                        offsets[i] = self.readI32();
+                    }
+                    self.pending_choice_base_ip = self.ip;
+                    self.pending_choice_offsets = offsets;
                     try self.emitChoice(count);
                 },
                 .emit_text_clear => {
@@ -899,6 +929,9 @@ test "VM: emit_choice builds options list" {
         @intFromEnum(OpCode.push_const), 2, 0,
         @intFromEnum(OpCode.push_const), 3, 0,
         @intFromEnum(OpCode.emit_choice), 2,
+        // Two i32 offsets (little-endian) — unused by this test; both 0.
+        0, 0, 0, 0,
+        0, 0, 0, 0,
         @intFromEnum(OpCode.halt),
     };
 
