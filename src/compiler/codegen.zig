@@ -191,6 +191,15 @@ pub const Compiler = struct {
     // @speaker directives and pushed as the speaker operand of emit_text.
     current_speaker: ?[]const u8 = null,
 
+    // Label table: `#name` → bytecode offset. Populated when a label_def
+    // is compiled; used to resolve @goto and #choice targets.
+    labels: std.StringHashMapUnmanaged(u32) = .{},
+
+    // Pending jumps keyed by label name — each entry is a list of bytecode
+    // positions that need a 4-byte jump offset patched in once the label
+    // is defined.
+    pending_label_jumps: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)) = .{},
+
     pub fn init(
         allocator: std.mem.Allocator,
         nodes: *const ast.NodeStore,
@@ -214,6 +223,10 @@ pub const Compiler = struct {
         self.locals.deinit(self.allocator);
         for (self.loop_stack.items) |*l| l.break_patches.deinit(self.allocator);
         self.loop_stack.deinit(self.allocator);
+        self.labels.deinit(self.allocator);
+        var it = self.pending_label_jumps.valueIterator();
+        while (it.next()) |list| list.deinit(self.allocator);
+        self.pending_label_jumps.deinit(self.allocator);
     }
 
     pub fn compile(self: *Compiler, program_idx: NodeIndex) !CompiledModule {
@@ -233,6 +246,8 @@ pub const Compiler = struct {
         }
 
         try self.emit(.halt);
+
+        self.reportUnresolvedLabels();
 
         // Patch main function local count (use max to account for scoped locals)
         self.functions.items[0].local_count = @intCast(self.max_locals);
@@ -860,6 +875,68 @@ pub const Compiler = struct {
         const offset: i32 = current - target;
         const bytes = std.mem.toBytes(std.mem.nativeToLittle(i32, offset));
         @memcpy(self.bytecode.items[patch_pos..][0..4], &bytes);
+    }
+
+    // ---- Label / flow control helpers ----
+
+    /// Record that `name` refers to the current bytecode position. Patches any
+    /// pending jumps that referenced the label before it was defined.
+    fn defineLabel(self: *Compiler, name: []const u8, span: Span) !void {
+        const offset: u32 = @intCast(self.bytecode.items.len);
+        const gop = self.labels.getOrPut(self.allocator, name) catch return error.OutOfMemory;
+        if (gop.found_existing) {
+            self.diagnostics.addError(.codegen, span, "duplicate label definition");
+            return;
+        }
+        gop.value_ptr.* = offset;
+
+        if (self.pending_label_jumps.getPtr(name)) |list| {
+            for (list.items) |patch_pos| {
+                self.patchLabelOffsetAt(patch_pos, offset);
+            }
+            list.deinit(self.allocator);
+            _ = self.pending_label_jumps.remove(name);
+        }
+    }
+
+    /// Emit an unconditional jump to `target_name`. If the label is already
+    /// defined the offset is written directly; otherwise a placeholder is
+    /// recorded for later patching.
+    fn emitJumpToLabel(self: *Compiler, target_name: []const u8) !void {
+        try self.emit(.jump);
+        const patch_pos: u32 = @intCast(self.bytecode.items.len);
+        self.bytecode.appendSlice(self.allocator, &[4]u8{ 0, 0, 0, 0 }) catch return error.OutOfMemory;
+        try self.recordLabelReference(target_name, patch_pos);
+    }
+
+    fn recordLabelReference(self: *Compiler, name: []const u8, patch_pos: u32) !void {
+        if (self.labels.get(name)) |target| {
+            self.patchLabelOffsetAt(patch_pos, target);
+            return;
+        }
+        const gop = self.pending_label_jumps.getOrPut(self.allocator, name) catch return error.OutOfMemory;
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        gop.value_ptr.append(self.allocator, patch_pos) catch return error.OutOfMemory;
+    }
+
+    fn patchLabelOffsetAt(self: *Compiler, patch_pos: u32, target: u32) void {
+        // Jump operand is a relative i32 from the position *after* the 4
+        // operand bytes.
+        const post: i32 = @intCast(patch_pos + 4);
+        const offset: i32 = @as(i32, @intCast(target)) - post;
+        const bytes = std.mem.toBytes(std.mem.nativeToLittle(i32, offset));
+        @memcpy(self.bytecode.items[patch_pos..][0..4], &bytes);
+    }
+
+    fn reportUnresolvedLabels(self: *Compiler) void {
+        var it = self.pending_label_jumps.keyIterator();
+        while (it.next()) |name_ptr| {
+            self.diagnostics.addError(.codegen, .{
+                .start = .{ .line = 0, .column = 0, .offset = 0 },
+                .end = .{ .line = 0, .column = 0, .offset = 0 },
+            }, "unresolved label reference");
+            _ = name_ptr; // name is in diagnostic-arena if we want
+        }
     }
 
     fn emitLoop(self: *Compiler, loop_start: u32) !void {
