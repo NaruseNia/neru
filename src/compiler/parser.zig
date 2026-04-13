@@ -111,6 +111,9 @@ pub const Parser = struct {
         if (std.mem.eql(u8, name, "clear")) {
             return self.parseClearDirective(start);
         }
+        if (std.mem.eql(u8, name, "if")) return self.parseScenarioIf(start);
+        if (std.mem.eql(u8, name, "call")) return self.parseScenarioCall(start);
+        if (std.mem.eql(u8, name, "eval")) return self.parseScenarioEval(start);
         if (std.mem.eql(u8, name, "goto")) return self.parseGotoDirective(start);
         if (std.mem.eql(u8, name, "jump")) return self.parseJumpDirective(start);
         if (std.mem.eql(u8, name, "bg")) return self.parseMediaDirective(start, .bg, .required);
@@ -177,6 +180,105 @@ pub const Parser = struct {
         return self.addNode(.{ .clear_directive = .{
             .span = self.spanFrom(start),
         } });
+    }
+
+    fn parseScenarioIf(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        const condition = try self.parseExpression();
+        try self.expectNewlineOrEof();
+
+        const then_body = try self.parseScenarioBlock();
+
+        var elifs: std.ArrayList(ast.ElseIfClause) = .empty;
+        defer elifs.deinit(self.allocator);
+        var else_body: ?[]const NodeIndex = null;
+
+        while (self.isAtScenarioKeyword("elif")) {
+            self.advance(); // consume @elif
+            const cond = try self.parseExpression();
+            try self.expectNewlineOrEof();
+            const body = try self.parseScenarioBlock();
+            elifs.append(self.allocator, .{
+                .condition = cond,
+                .body = body,
+            }) catch return error.OutOfMemory;
+        }
+
+        if (self.isAtScenarioKeyword("else")) {
+            self.advance();
+            try self.expectNewlineOrEof();
+            else_body = try self.parseScenarioBlock();
+        }
+
+        if (!self.isAtScenarioKeyword("end")) {
+            self.reportError("expected '@end' to close '@if'");
+            return error.UnexpectedToken;
+        }
+        self.advance();
+        try self.expectNewlineOrEof();
+
+        const owned_elifs = self.allocator.dupe(ast.ElseIfClause, elifs.items) catch return error.OutOfMemory;
+        return self.addNode(.{ .if_stmt = .{
+            .condition = condition,
+            .then_body = then_body,
+            .else_if_clauses = owned_elifs,
+            .else_body = else_body,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseScenarioCall(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        // `@call expr` where expr is required to be a call expression.
+        const expr_idx = try self.parseExpression();
+        const node = self.nodes.getNode(expr_idx);
+        if (node != .call_expr) {
+            self.reportError("@call expects a function call expression");
+            return error.UnexpectedToken;
+        }
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .expr_stmt = .{
+            .expr = expr_idx,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseScenarioEval(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        const expr_idx = try self.parseExpression();
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .expr_stmt = .{
+            .expr = expr_idx,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseScenarioBlock(self: *Parser) ParseError![]const NodeIndex {
+        var stmts: std.ArrayList(NodeIndex) = .empty;
+        defer stmts.deinit(self.allocator);
+
+        self.skipNewlines();
+        while (!self.isScenarioBlockTerminator()) {
+            const stmt = self.parseStatement() catch |err| {
+                if (err == error.OutOfMemory) return err;
+                self.synchronize();
+                continue;
+            };
+            stmts.append(self.allocator, stmt) catch return error.OutOfMemory;
+            self.skipNewlines();
+        }
+
+        return self.allocator.dupe(NodeIndex, stmts.items) catch return error.OutOfMemory;
+    }
+
+    fn isScenarioBlockTerminator(self: *Parser) bool {
+        if (self.current.tag == .eof) return true;
+        if (self.current.tag != .at_directive) return false;
+        const name = self.current.lexeme;
+        return std.mem.eql(u8, name, "elif") or
+            std.mem.eql(u8, name, "else") or
+            std.mem.eql(u8, name, "end");
+    }
+
+    fn isAtScenarioKeyword(self: *const Parser, name: []const u8) bool {
+        return self.current.tag == .at_directive and std.mem.eql(u8, self.current.lexeme, name);
     }
 
     fn parseGotoDirective(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {

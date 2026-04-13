@@ -532,7 +532,12 @@ pub const VM = struct {
         while (i > 0) : (i -= 1) {
             const target = try self.popString();
             const label = try self.popString();
-            options[i - 1] = .{ .label = label, .target = target };
+            const visible_val = try self.pop();
+            options[i - 1] = .{
+                .label = label,
+                .target = target,
+                .visible = visible_val.isTruthy(),
+            };
         }
         self.pending_event = .{ .choice_prompt = .{ .options = options } };
         self.suspended = true;
@@ -924,8 +929,12 @@ test "VM: emit_choice builds options list" {
         .{ .string = "Defend" }, .{ .string = "defend_label" },
     };
     const bc = [_]u8{
+        // item 0: visible=true, label, target
+        @intFromEnum(OpCode.push_true),
         @intFromEnum(OpCode.push_const), 0, 0,
         @intFromEnum(OpCode.push_const), 1, 0,
+        // item 1: visible=true, label, target
+        @intFromEnum(OpCode.push_true),
         @intFromEnum(OpCode.push_const), 2, 0,
         @intFromEnum(OpCode.push_const), 3, 0,
         @intFromEnum(OpCode.emit_choice), 2,
@@ -1212,6 +1221,88 @@ test "integration: unresolved label is reported" {
     var compiler = codegen_mod.Compiler.init(allocator, &nodes, &diags);
     _ = try compiler.compile(root);
     try std.testing.expect(diags.hasErrors());
+}
+
+test "integration: scenario @if picks then branch" {
+    const source =
+        \\@if 10 > 5
+        \\then branch
+        \\@else
+        \\else branch
+        \\@end
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tags = try runScenarioCollect(arena.allocator(), source);
+    try std.testing.expectEqual(@as(usize, 1), tags.items.len);
+    try std.testing.expectEqualStrings("text_display", tags.items[0]);
+}
+
+test "integration: scenario @elif selects matching branch" {
+    const source =
+        \\@if 1 == 0
+        \\never
+        \\@elif 2 == 2
+        \\elif hit
+        \\@else
+        \\else
+        \\@end
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tags = try runScenarioCollect(arena.allocator(), source);
+    try std.testing.expectEqual(@as(usize, 1), tags.items.len);
+    try std.testing.expectEqualStrings("text_display", tags.items[0]);
+}
+
+test "integration: conditional choice hides false options" {
+    const source =
+        \\#choice
+        \\  - "visible" -> a
+        \\  - "hidden" -> b @if 1 == 0
+        \\
+        \\#a
+        \\picked a
+        \\@goto done
+        \\#b
+        \\picked b
+        \\@goto done
+        \\#done
+        \\end
+        \\
+    ;
+    const diagnostic = @import("../compiler/diagnostic.zig");
+    const ast_mod = @import("../compiler/ast.zig");
+    const lexer_mod = @import("../compiler/lexer.zig");
+    const parser_mod = @import("../compiler/parser.zig");
+    const codegen_mod = @import("../compiler/codegen.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var diags = diagnostic.DiagnosticList.init(allocator);
+    var nodes = ast_mod.NodeStore.init(allocator);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .scenario);
+    var parser = parser_mod.Parser.init(allocator, &lexer, &nodes, &diags);
+    const root = try parser.parseProgram();
+    try std.testing.expect(!diags.hasErrors());
+
+    var compiler = codegen_mod.Compiler.init(allocator, &nodes, &diags);
+    const module = try compiler.compile(root);
+    try std.testing.expect(!diags.hasErrors());
+
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const evt = try vm.runUntilEvent();
+    const prompt = evt.?.choice_prompt;
+    try std.testing.expectEqual(@as(usize, 2), prompt.options.len);
+    try std.testing.expect(prompt.options[0].visible);
+    try std.testing.expect(!prompt.options[1].visible);
 }
 
 test "integration: text line carries compile-time speaker" {

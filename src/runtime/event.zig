@@ -66,6 +66,9 @@ pub const Transition = struct {
 pub const ChoiceOption = struct {
     label: []const u8,
     target: []const u8,
+    /// False when an attached @if condition evaluated to false; the engine
+    /// should hide or disable this option without changing sibling indices.
+    visible: bool = true,
 };
 
 pub const ChoicePrompt = struct {

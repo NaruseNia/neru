@@ -379,18 +379,13 @@ pub const Compiler = struct {
         }
         const count: u8 = @intCast(d.items.len);
 
-        // Phase 2.3 compiles all items unconditionally; @if conditions are
-        // parsed but filtering is deferred to Phase 2.4. Warn once if any
-        // condition is present so the author knows.
+        // Push each item as (visible_flag, label, target_name).
         for (d.items) |item| {
-            if (item.condition != null) {
-                self.diagnostics.addWarning(.codegen, d.span, "@if on choice items is not yet evaluated (Phase 2.4)");
-                break;
+            if (item.condition) |cond| {
+                try self.compileExpr(cond);
+            } else {
+                try self.emit(.push_true);
             }
-        }
-
-        // Push each (label, target_name) pair onto the stack.
-        for (d.items) |item| {
             const label_idx = try self.addStringConstant(item.label);
             try self.emitWithU16(.push_const, label_idx);
             const target_idx = try self.addStringConstant(item.target);
