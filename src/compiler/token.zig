@@ -69,6 +69,7 @@ pub const Tag = enum {
     not,
     dot,
     dot_dot,
+    dashdash,
 
     // Delimiters
     lparen,
@@ -136,6 +137,7 @@ pub const Tag = enum {
             .not => "!",
             .dot => ".",
             .dot_dot => "..",
+            .dashdash => "--",
             .lparen => "(",
             .rparen => ")",
             .lbrace => "{",
