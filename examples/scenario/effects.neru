@@ -1,0 +1,12 @@
+@bg forest.png --fade=slow --duration=500
+@bgm theme.ogg --volume=0.8
+@show taro --pos=center
+@speaker Taro
+It's quiet in the forest today.
+@transition wipe --direction=left
+@show hanako --pos=right
+@speaker Hanako
+Hey there!
+@se door.wav
+@hide taro
+@bgm_stop

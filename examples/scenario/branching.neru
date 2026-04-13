@@ -1,0 +1,16 @@
+@speaker Narrator
+You reach a fork in the road.
+#choice
+  - "Take the left path" -> left
+  - "Take the right path" -> right
+
+#left
+You chose the quiet forest trail.
+@goto end
+
+#right
+You chose the steep mountain road.
+@goto end
+
+#end
+Either way, you eventually made it home.
