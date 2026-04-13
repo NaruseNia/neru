@@ -1125,6 +1125,95 @@ test "integration: media directive options are threaded through" {
     try std.testing.expectEqual(@as(i64, 500), bg.args[1].value.int);
 }
 
+test "integration: @goto skips intermediate statements" {
+    const source =
+        \\@speaker N
+        \\first
+        \\@goto after
+        \\skipped
+        \\#after
+        \\reached
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tags = try runScenarioCollect(arena.allocator(), source);
+
+    const expected = [_][]const u8{
+        "speaker_change",
+        "text_display", // "first"
+        "text_display", // "reached" (skipped line was bypassed)
+    };
+    try std.testing.expectEqual(expected.len, tags.items.len);
+    for (expected, tags.items) |want, got| {
+        try std.testing.expectEqualStrings(want, got);
+    }
+}
+
+test "integration: #choice jumps to selected target" {
+    const source =
+        \\pick one
+        \\#choice
+        \\  - "A" -> path_a
+        \\  - "B" -> path_b
+        \\
+        \\#path_a
+        \\you chose A
+        \\@goto done
+        \\
+        \\#path_b
+        \\you chose B
+        \\@goto done
+        \\
+        \\#done
+        \\end
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // runScenarioCollect auto-selects 0 for choice_prompt, so we expect the
+    // "A" branch to execute.
+    const tags = try runScenarioCollect(arena.allocator(), source);
+
+    const expected = [_][]const u8{
+        "text_display", // "pick one"
+        "choice_prompt",
+        "text_display", // "you chose A"
+        "text_display", // "end"
+    };
+    try std.testing.expectEqual(expected.len, tags.items.len);
+    for (expected, tags.items) |want, got| {
+        try std.testing.expectEqualStrings(want, got);
+    }
+}
+
+test "integration: unresolved label is reported" {
+    const source =
+        \\@goto missing
+        \\
+    ;
+    const diagnostic = @import("../compiler/diagnostic.zig");
+    const ast_mod = @import("../compiler/ast.zig");
+    const lexer_mod = @import("../compiler/lexer.zig");
+    const parser_mod = @import("../compiler/parser.zig");
+    const codegen_mod = @import("../compiler/codegen.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var diags = diagnostic.DiagnosticList.init(allocator);
+    var nodes = ast_mod.NodeStore.init(allocator);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .scenario);
+    var parser = parser_mod.Parser.init(allocator, &lexer, &nodes, &diags);
+    const root = try parser.parseProgram();
+    try std.testing.expect(!diags.hasErrors());
+
+    var compiler = codegen_mod.Compiler.init(allocator, &nodes, &diags);
+    _ = try compiler.compile(root);
+    try std.testing.expect(diags.hasErrors());
+}
+
 test "integration: text line carries compile-time speaker" {
     const source =
         \\@speaker Alice
