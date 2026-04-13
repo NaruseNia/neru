@@ -3,9 +3,12 @@ const opcodes_mod = @import("opcodes.zig");
 const value_mod = @import("value.zig");
 const stack_mod = @import("stack.zig");
 const codegen = @import("../compiler/codegen.zig");
+const event_mod = @import("../runtime/event.zig");
 
 const OpCode = opcodes_mod.OpCode;
 const Value = value_mod.Value;
+const Event = event_mod.Event;
+const Response = event_mod.Response;
 const CompiledModule = codegen.CompiledModule;
 const Constant = codegen.Constant;
 const FunctionEntry = codegen.FunctionEntry;
@@ -49,6 +52,12 @@ pub const VM = struct {
     // Strings allocated during execution
     allocated_strings: std.ArrayList([]u8) = .empty,
 
+    // Event system state
+    suspended: bool = false,
+    pending_event: ?Event = null,
+    final_value: ?Value = null,
+    last_response: Response = .{ .none = {} },
+
     pub fn init(allocator: std.mem.Allocator) VM {
         return .{
             .ip = 0,
@@ -86,11 +95,35 @@ pub const VM = struct {
     }
 
     pub fn execute(self: *VM) VMError!?Value {
-        return self.run();
+        while (true) {
+            const evt = try self.runUntilEvent();
+            if (evt == null) break;
+            self.resumeWith(.{ .none = {} });
+        }
+        return self.final_value;
     }
 
-    fn run(self: *VM) VMError!?Value {
-        while (self.ip < self.bytecode.len) {
+    /// Execute until an event is emitted or execution completes.
+    /// Returns the pending event, or null if execution finished.
+    /// The returned Event references VM-owned memory and is valid until the
+    /// next call to runUntilEvent() or resumeWith().
+    pub fn runUntilEvent(self: *VM) VMError!?Event {
+        if (self.suspended) return self.pending_event;
+        try self.runLoop();
+        if (self.suspended) return self.pending_event;
+        return null;
+    }
+
+    /// Continue execution after an event, optionally passing a response.
+    /// The response may influence future behavior (e.g., choice selection).
+    pub fn resumeWith(self: *VM, response: Response) void {
+        self.last_response = response;
+        self.pending_event = null;
+        self.suspended = false;
+    }
+
+    fn runLoop(self: *VM) VMError!void {
+        while (self.ip < self.bytecode.len and !self.suspended) {
             const op: OpCode = @enumFromInt(self.bytecode[self.ip]);
             self.ip += 1;
 
@@ -224,7 +257,9 @@ pub const VM = struct {
 
                     if (self.call_stack.top == 0) {
                         // Return from top-level
-                        return return_val;
+                        self.final_value = return_val;
+                        self.ip = @intCast(self.bytecode.len);
+                        return;
                     }
 
                     const frame = self.call_stack.pop() catch return error.RuntimeError;
@@ -267,13 +302,13 @@ pub const VM = struct {
 
                 .halt => {
                     if (self.stack.top > 0) {
-                        return self.pop() catch null;
+                        self.final_value = self.pop() catch null;
                     }
-                    return null;
+                    self.ip = @intCast(self.bytecode.len);
+                    return;
                 },
             }
         }
-        return null;
     }
 
     // ---- Helpers ----
