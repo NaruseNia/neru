@@ -280,11 +280,18 @@ fn renderMockEvent(evt: Event, stdout: anytype) !Response {
         },
         .choice_prompt => |cp| {
             try stdout.print("[choice]\n", .{});
+            var first_visible: ?usize = null;
             for (cp.options, 0..) |opt, i| {
-                try stdout.print("  {d}) {s} -> {s}\n", .{ i, opt.label, opt.target });
+                if (opt.visible) {
+                    if (first_visible == null) first_visible = i;
+                    try stdout.print("  {d}) {s} -> {s}\n", .{ i, opt.label, opt.target });
+                } else {
+                    try stdout.print("  {d}) (hidden) {s} -> {s}\n", .{ i, opt.label, opt.target });
+                }
             }
-            try stdout.print("  (selecting 0)\n", .{});
-            return .{ .choice_selected = 0 };
+            const selected: u32 = @intCast(first_visible orelse 0);
+            try stdout.print("  (selecting {d})\n", .{selected});
+            return .{ .choice_selected = selected };
         },
         .wait => |w| {
             try stdout.print("[wait] {d}ms\n", .{w.ms});

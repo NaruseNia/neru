@@ -532,7 +532,12 @@ pub const VM = struct {
         while (i > 0) : (i -= 1) {
             const target = try self.popString();
             const label = try self.popString();
-            options[i - 1] = .{ .label = label, .target = target };
+            const visible_val = try self.pop();
+            options[i - 1] = .{
+                .label = label,
+                .target = target,
+                .visible = visible_val.isTruthy(),
+            };
         }
         self.pending_event = .{ .choice_prompt = .{ .options = options } };
         self.suspended = true;
@@ -924,8 +929,12 @@ test "VM: emit_choice builds options list" {
         .{ .string = "Defend" }, .{ .string = "defend_label" },
     };
     const bc = [_]u8{
+        // item 0: visible=true, label, target
+        @intFromEnum(OpCode.push_true),
         @intFromEnum(OpCode.push_const), 0, 0,
         @intFromEnum(OpCode.push_const), 1, 0,
+        // item 1: visible=true, label, target
+        @intFromEnum(OpCode.push_true),
         @intFromEnum(OpCode.push_const), 2, 0,
         @intFromEnum(OpCode.push_const), 3, 0,
         @intFromEnum(OpCode.emit_choice), 2,
