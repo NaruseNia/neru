@@ -1223,6 +1223,88 @@ test "integration: unresolved label is reported" {
     try std.testing.expect(diags.hasErrors());
 }
 
+test "integration: scenario @if picks then branch" {
+    const source =
+        \\@if 10 > 5
+        \\then branch
+        \\@else
+        \\else branch
+        \\@end
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tags = try runScenarioCollect(arena.allocator(), source);
+    try std.testing.expectEqual(@as(usize, 1), tags.items.len);
+    try std.testing.expectEqualStrings("text_display", tags.items[0]);
+}
+
+test "integration: scenario @elif selects matching branch" {
+    const source =
+        \\@if 1 == 0
+        \\never
+        \\@elif 2 == 2
+        \\elif hit
+        \\@else
+        \\else
+        \\@end
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tags = try runScenarioCollect(arena.allocator(), source);
+    try std.testing.expectEqual(@as(usize, 1), tags.items.len);
+    try std.testing.expectEqualStrings("text_display", tags.items[0]);
+}
+
+test "integration: conditional choice hides false options" {
+    const source =
+        \\#choice
+        \\  - "visible" -> a
+        \\  - "hidden" -> b @if 1 == 0
+        \\
+        \\#a
+        \\picked a
+        \\@goto done
+        \\#b
+        \\picked b
+        \\@goto done
+        \\#done
+        \\end
+        \\
+    ;
+    const diagnostic = @import("../compiler/diagnostic.zig");
+    const ast_mod = @import("../compiler/ast.zig");
+    const lexer_mod = @import("../compiler/lexer.zig");
+    const parser_mod = @import("../compiler/parser.zig");
+    const codegen_mod = @import("../compiler/codegen.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var diags = diagnostic.DiagnosticList.init(allocator);
+    var nodes = ast_mod.NodeStore.init(allocator);
+    var lexer = lexer_mod.Lexer.init(source, &diags, .scenario);
+    var parser = parser_mod.Parser.init(allocator, &lexer, &nodes, &diags);
+    const root = try parser.parseProgram();
+    try std.testing.expect(!diags.hasErrors());
+
+    var compiler = codegen_mod.Compiler.init(allocator, &nodes, &diags);
+    const module = try compiler.compile(root);
+    try std.testing.expect(!diags.hasErrors());
+
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.load(module);
+
+    const evt = try vm.runUntilEvent();
+    const prompt = evt.?.choice_prompt;
+    try std.testing.expectEqual(@as(usize, 2), prompt.options.len);
+    try std.testing.expect(prompt.options[0].visible);
+    try std.testing.expect(!prompt.options[1].visible);
+}
+
 test "integration: text line carries compile-time speaker" {
     const source =
         \\@speaker Alice
