@@ -163,6 +163,11 @@ const Local = struct {
     depth: u16,
 };
 
+const LabelPatch = struct {
+    patch_pos: u32,
+    base: u32,
+};
+
 const LoopContext = struct {
     break_patches: std.ArrayList(u32),
     continue_target: u32,
@@ -195,10 +200,11 @@ pub const Compiler = struct {
     // is compiled; used to resolve @goto and #choice targets.
     labels: std.StringHashMapUnmanaged(u32) = .{},
 
-    // Pending jumps keyed by label name — each entry is a list of bytecode
-    // positions that need a 4-byte jump offset patched in once the label
-    // is defined.
-    pending_label_jumps: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)) = .{},
+    // Pending jumps keyed by label name. Each patch remembers both the
+    // bytecode position of the 4-byte slot to fill and the base IP from
+    // which the relative offset is measured (usually patch_pos + 4, but
+    // for emit_choice offset tables it is the post-operand IP).
+    pending_label_jumps: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(LabelPatch)) = .{},
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -283,6 +289,10 @@ pub const Compiler = struct {
             .wait_directive => |n| try self.compileWaitDirective(n),
             .clear_directive => |n| try self.compileClearDirective(n),
             .media_directive => |n| try self.compileMediaDirective(n),
+            .label_def => |n| try self.defineLabel(n.name, n.span),
+            .goto_directive => |n| try self.compileGotoDirective(n),
+            .jump_directive => |n| try self.compileJumpDirective(n),
+            .choice_block => |n| try self.compileChoiceBlock(n),
             else => {
                 // Expression nodes shouldn't appear at statement level
                 try self.compileExpr(idx);
@@ -345,6 +355,64 @@ pub const Compiler = struct {
     fn compileClearDirective(self: *Compiler, d: ast.ClearDirective) !void {
         self.addDebugLine(d.span.start.line);
         try self.emit(.emit_text_clear);
+    }
+
+    fn compileGotoDirective(self: *Compiler, d: ast.GotoDirective) !void {
+        self.addDebugLine(d.span.start.line);
+        try self.emitJumpToLabel(d.target);
+    }
+
+    fn compileJumpDirective(self: *Compiler, d: ast.JumpDirective) !void {
+        // Cross-file jumps are scheduled for later phases (see Phase 3.6).
+        // Accept the syntax but surface a codegen diagnostic so the user
+        // knows it will not execute at runtime yet.
+        self.diagnostics.addWarning(.codegen, d.span, "@jump is not yet implemented; execution will halt here");
+        try self.emit(.halt);
+    }
+
+    fn compileChoiceBlock(self: *Compiler, d: ast.ChoiceBlock) !void {
+        self.addDebugLine(d.span.start.line);
+
+        if (d.items.len > 255) {
+            self.diagnostics.addError(.codegen, d.span, "#choice supports at most 255 items");
+            return error.RuntimeError;
+        }
+        const count: u8 = @intCast(d.items.len);
+
+        // Phase 2.3 compiles all items unconditionally; @if conditions are
+        // parsed but filtering is deferred to Phase 2.4. Warn once if any
+        // condition is present so the author knows.
+        for (d.items) |item| {
+            if (item.condition != null) {
+                self.diagnostics.addWarning(.codegen, d.span, "@if on choice items is not yet evaluated (Phase 2.4)");
+                break;
+            }
+        }
+
+        // Push each (label, target_name) pair onto the stack.
+        for (d.items) |item| {
+            const label_idx = try self.addStringConstant(item.label);
+            try self.emitWithU16(.push_const, label_idx);
+            const target_idx = try self.addStringConstant(item.target);
+            try self.emitWithU16(.push_const, target_idx);
+        }
+
+        try self.emit(.emit_choice);
+        self.bytecode.append(self.allocator, count) catch return error.OutOfMemory;
+
+        // Reserve count × i32 for the offset table. Each slot is patched when
+        // its target label is defined (or immediately if already known).
+        const offsets_start: u32 = @intCast(self.bytecode.items.len);
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            self.bytecode.appendSlice(self.allocator, &[4]u8{ 0, 0, 0, 0 }) catch return error.OutOfMemory;
+        }
+        const base: u32 = offsets_start + count * 4;
+
+        for (d.items, 0..) |item, idx| {
+            const patch_pos: u32 = offsets_start + @as(u32, @intCast(idx)) * 4;
+            try self.recordLabelReference(item.target, .{ .patch_pos = patch_pos, .base = base });
+        }
     }
 
     fn compileMediaDirective(self: *Compiler, d: ast.MediaDirective) !void {
@@ -891,8 +959,8 @@ pub const Compiler = struct {
         gop.value_ptr.* = offset;
 
         if (self.pending_label_jumps.getPtr(name)) |list| {
-            for (list.items) |patch_pos| {
-                self.patchLabelOffsetAt(patch_pos, offset);
+            for (list.items) |patch| {
+                self.writeRelativeOffsetAt(patch.patch_pos, patch.base, offset);
             }
             list.deinit(self.allocator);
             _ = self.pending_label_jumps.remove(name);
@@ -906,24 +974,21 @@ pub const Compiler = struct {
         try self.emit(.jump);
         const patch_pos: u32 = @intCast(self.bytecode.items.len);
         self.bytecode.appendSlice(self.allocator, &[4]u8{ 0, 0, 0, 0 }) catch return error.OutOfMemory;
-        try self.recordLabelReference(target_name, patch_pos);
+        try self.recordLabelReference(target_name, .{ .patch_pos = patch_pos, .base = patch_pos + 4 });
     }
 
-    fn recordLabelReference(self: *Compiler, name: []const u8, patch_pos: u32) !void {
+    fn recordLabelReference(self: *Compiler, name: []const u8, patch: LabelPatch) !void {
         if (self.labels.get(name)) |target| {
-            self.patchLabelOffsetAt(patch_pos, target);
+            self.writeRelativeOffsetAt(patch.patch_pos, patch.base, target);
             return;
         }
         const gop = self.pending_label_jumps.getOrPut(self.allocator, name) catch return error.OutOfMemory;
         if (!gop.found_existing) gop.value_ptr.* = .{};
-        gop.value_ptr.append(self.allocator, patch_pos) catch return error.OutOfMemory;
+        gop.value_ptr.append(self.allocator, patch) catch return error.OutOfMemory;
     }
 
-    fn patchLabelOffsetAt(self: *Compiler, patch_pos: u32, target: u32) void {
-        // Jump operand is a relative i32 from the position *after* the 4
-        // operand bytes.
-        const post: i32 = @intCast(patch_pos + 4);
-        const offset: i32 = @as(i32, @intCast(target)) - post;
+    fn writeRelativeOffsetAt(self: *Compiler, patch_pos: u32, base: u32, target: u32) void {
+        const offset: i32 = @as(i32, @intCast(target)) - @as(i32, @intCast(base));
         const bytes = std.mem.toBytes(std.mem.nativeToLittle(i32, offset));
         @memcpy(self.bytecode.items[patch_pos..][0..4], &bytes);
     }
