@@ -7,6 +7,15 @@ pub const Tag = token.Tag;
 pub const SourceLocation = token.SourceLocation;
 pub const Span = token.Span;
 
+pub const Mode = enum {
+    logic,
+    scenario,
+
+    pub fn fromPath(path: []const u8) Mode {
+        return if (std.mem.endsWith(u8, path, ".neru")) .scenario else .logic;
+    }
+};
+
 pub const Lexer = struct {
     source: []const u8,
     pos: u32,
@@ -14,19 +23,38 @@ pub const Lexer = struct {
     column: u32,
     diagnostics: *diagnostic.DiagnosticList,
     prev_was_newline: bool,
+    mode: Mode,
+    /// True when the lexer is currently emitting chunks of a scenario text line.
+    /// Cleared by newline handling and reset after each line-start dispatch.
+    in_text_line: bool = false,
+    /// Nesting depth of `{...}` interpolations opened from within a scenario
+    /// text line. While > 0 the lexer tokenizes logic-mode tokens; a matching
+    /// `}` decrements and we resume text-line reading.
+    interp_depth: u32 = 0,
 
-    pub fn init(source: []const u8, diagnostics: *diagnostic.DiagnosticList) Lexer {
+    pub fn init(
+        source: []const u8,
+        diagnostics: *diagnostic.DiagnosticList,
+        initial_mode: Mode,
+    ) Lexer {
         return .{
             .source = source,
             .pos = 0,
             .line = 1,
             .column = 1,
             .diagnostics = diagnostics,
-            .prev_was_newline = false,
+            .prev_was_newline = true, // beginning of file is effectively a line start
+            .mode = initial_mode,
         };
     }
 
     pub fn next(self: *Lexer) Token {
+        // When emitting chunks of a scenario text line, the next piece is
+        // either another text chunk or the `{` of an interpolation.
+        if (self.mode == .scenario and self.in_text_line and self.interp_depth == 0) {
+            return self.continueTextLine();
+        }
+
         self.skipWhitespace();
 
         if (self.isAtEnd()) {
@@ -50,15 +78,27 @@ pub const Lexer = struct {
 
         // Newlines
         if (c == '\n') {
+            self.in_text_line = false;
             return self.handleNewline(start);
         }
         if (c == '\r') {
             if (self.peek() == '\n') _ = self.advance();
+            self.in_text_line = false;
             return self.handleNewline(start);
         }
 
-        // After processing non-whitespace, mark that we're no longer at a newline
+        const was_at_line_start = self.prev_was_newline;
         self.prev_was_newline = false;
+
+        // Scenario-mode line-start dispatch
+        if (self.mode == .scenario and was_at_line_start and self.interp_depth == 0) {
+            if (c == '@') {
+                return self.readDirective(start);
+            }
+            // Any other first char begins a scenario text line.
+            self.in_text_line = true;
+            return self.readTextChunk(start);
+        }
 
         // String literals
         if (c == '"') {
@@ -75,8 +115,68 @@ pub const Lexer = struct {
             return self.readIdentifier(start);
         }
 
+        // Track interpolation braces so we can resume scenario text after `}`.
+        if (c == '{' and self.mode == .scenario and self.in_text_line) {
+            self.interp_depth += 1;
+            return self.makeTokenWithLexeme(.lbrace, start, self.source[start.offset..self.pos]);
+        }
+        if (c == '}' and self.interp_depth > 0) {
+            self.interp_depth -= 1;
+            return self.makeTokenWithLexeme(.rbrace, start, self.source[start.offset..self.pos]);
+        }
+
         // Operators and delimiters
         return self.readOperator(c, start);
+    }
+
+    /// Read a scenario directive after the leading '@' has been consumed.
+    fn readDirective(self: *Lexer, start: SourceLocation) Token {
+        const name_start = self.pos;
+        while (!self.isAtEnd() and isAlphaNumeric(self.peek().?)) {
+            _ = self.advance();
+        }
+        if (self.pos == name_start) {
+            self.diagnostics.addError(.lexer, .{
+                .start = start,
+                .end = self.currentLocation(),
+            }, "expected directive name after '@'");
+            return self.makeTokenWithLexeme(.invalid, start, self.source[start.offset..self.pos]);
+        }
+        return self.makeTokenWithLexeme(.at_directive, start, self.source[name_start..self.pos]);
+    }
+
+    /// Read a text chunk whose first character has already been consumed.
+    fn readTextChunk(self: *Lexer, start: SourceLocation) Token {
+        const start_pos = start.offset;
+        while (!self.isAtEnd()) {
+            const ch = self.peek().?;
+            if (ch == '{' or ch == '\n' or ch == '\r') break;
+            _ = self.advance();
+        }
+        return self.makeTokenWithLexeme(.text_chunk, start, self.source[start_pos..self.pos]);
+    }
+
+    /// Continue a scenario text line at the current position. Emits the next
+    /// token (text chunk, `{` interpolation, or newline).
+    fn continueTextLine(self: *Lexer) Token {
+        if (self.isAtEnd()) {
+            self.in_text_line = false;
+            return self.makeSimpleToken(.eof);
+        }
+        const start = self.currentLocation();
+        const ch = self.peek().?;
+        if (ch == '\n' or ch == '\r') {
+            _ = self.advance();
+            if (ch == '\r' and self.peek() == '\n') _ = self.advance();
+            self.in_text_line = false;
+            return self.handleNewline(start);
+        }
+        if (ch == '{') {
+            _ = self.advance();
+            self.interp_depth += 1;
+            return self.makeTokenWithLexeme(.lbrace, start, self.source[start.offset..self.pos]);
+        }
+        return self.readTextChunk(start);
     }
 
     fn handleNewline(self: *Lexer, start: SourceLocation) Token {
@@ -421,7 +521,7 @@ fn isAlphaNumeric(c: u8) bool {
 
 fn collectTokens(source: []const u8, allocator: std.mem.Allocator) !struct { tokens: std.ArrayList(Token), diags: diagnostic.DiagnosticList } {
     var diags = diagnostic.DiagnosticList.init(allocator);
-    var lexer = Lexer.init(source, &diags);
+    var lexer = Lexer.init(source, &diags, .logic);
     var tokens: std.ArrayList(Token) = .empty;
 
     while (true) {
@@ -687,6 +787,148 @@ test "unexpected character reports error" {
 test "single & reports error with suggestion" {
     const allocator = std.testing.allocator;
     var result = try collectTokens("&\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    try std.testing.expect(result.diags.hasErrors());
+}
+
+// ---- Scenario-mode tests ----
+
+fn collectScenarioTokens(source: []const u8, allocator: std.mem.Allocator) !struct { tokens: std.ArrayList(Token), diags: diagnostic.DiagnosticList } {
+    var diags = diagnostic.DiagnosticList.init(allocator);
+    var lexer = Lexer.init(source, &diags, .scenario);
+    var tokens: std.ArrayList(Token) = .empty;
+    while (true) {
+        const tok = lexer.next();
+        try tokens.append(allocator, tok);
+        if (tok.tag == .eof) break;
+    }
+    return .{ .tokens = tokens, .diags = diags };
+}
+
+test "scenario: plain text line becomes a single text_chunk" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("Hello world\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    try std.testing.expectEqual(Tag.text_chunk, result.tokens.items[0].tag);
+    try std.testing.expectEqualStrings("Hello world", result.tokens.items[0].lexeme);
+    try std.testing.expectEqual(Tag.newline, result.tokens.items[1].tag);
+    try std.testing.expectEqual(Tag.eof, result.tokens.items[2].tag);
+}
+
+test "scenario: @speaker directive yields at_directive + identifier" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("@speaker Alice\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    try std.testing.expectEqual(Tag.at_directive, result.tokens.items[0].tag);
+    try std.testing.expectEqualStrings("speaker", result.tokens.items[0].lexeme);
+    try std.testing.expectEqual(Tag.identifier, result.tokens.items[1].tag);
+    try std.testing.expectEqualStrings("Alice", result.tokens.items[1].lexeme);
+    try std.testing.expectEqual(Tag.newline, result.tokens.items[2].tag);
+}
+
+test "scenario: @wait takes int literal" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("@wait 500\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    try std.testing.expectEqual(Tag.at_directive, result.tokens.items[0].tag);
+    try std.testing.expectEqualStrings("wait", result.tokens.items[0].lexeme);
+    try std.testing.expectEqual(Tag.int_literal, result.tokens.items[1].tag);
+    try std.testing.expectEqualStrings("500", result.tokens.items[1].lexeme);
+}
+
+test "scenario: @clear has no args" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("@clear\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    try std.testing.expectEqual(Tag.at_directive, result.tokens.items[0].tag);
+    try std.testing.expectEqualStrings("clear", result.tokens.items[0].lexeme);
+    try std.testing.expectEqual(Tag.newline, result.tokens.items[1].tag);
+}
+
+test "scenario: text with single interpolation" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("hello {name}!\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    const tags = result.tokens.items;
+    try std.testing.expectEqual(Tag.text_chunk, tags[0].tag);
+    try std.testing.expectEqualStrings("hello ", tags[0].lexeme);
+    try std.testing.expectEqual(Tag.lbrace, tags[1].tag);
+    try std.testing.expectEqual(Tag.identifier, tags[2].tag);
+    try std.testing.expectEqualStrings("name", tags[2].lexeme);
+    try std.testing.expectEqual(Tag.rbrace, tags[3].tag);
+    try std.testing.expectEqual(Tag.text_chunk, tags[4].tag);
+    try std.testing.expectEqualStrings("!", tags[4].lexeme);
+    try std.testing.expectEqual(Tag.newline, tags[5].tag);
+}
+
+test "scenario: text with multiple interpolations" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("a{x}b{y}c\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    const tags = result.tokens.items;
+    try std.testing.expectEqual(Tag.text_chunk, tags[0].tag);
+    try std.testing.expectEqualStrings("a", tags[0].lexeme);
+    try std.testing.expectEqual(Tag.lbrace, tags[1].tag);
+    try std.testing.expectEqual(Tag.identifier, tags[2].tag);
+    try std.testing.expectEqual(Tag.rbrace, tags[3].tag);
+    try std.testing.expectEqual(Tag.text_chunk, tags[4].tag);
+    try std.testing.expectEqualStrings("b", tags[4].lexeme);
+    try std.testing.expectEqual(Tag.lbrace, tags[5].tag);
+    try std.testing.expectEqual(Tag.identifier, tags[6].tag);
+    try std.testing.expectEqual(Tag.rbrace, tags[7].tag);
+    try std.testing.expectEqual(Tag.text_chunk, tags[8].tag);
+    try std.testing.expectEqualStrings("c", tags[8].lexeme);
+}
+
+test "scenario: blank lines between directives" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("@clear\n\n@wait 100\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    try std.testing.expectEqual(Tag.at_directive, result.tokens.items[0].tag);
+    try std.testing.expectEqualStrings("clear", result.tokens.items[0].lexeme);
+    try std.testing.expectEqual(Tag.newline, result.tokens.items[1].tag);
+    try std.testing.expectEqual(Tag.at_directive, result.tokens.items[2].tag);
+    try std.testing.expectEqualStrings("wait", result.tokens.items[2].lexeme);
+    try std.testing.expectEqual(Tag.int_literal, result.tokens.items[3].tag);
+}
+
+test "scenario: mixed text line and directive" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("Hello\n@speaker Bob\nHow are you?\n", allocator);
+    defer result.tokens.deinit(allocator);
+    defer result.diags.deinit();
+
+    const items = result.tokens.items;
+    try std.testing.expectEqual(Tag.text_chunk, items[0].tag);
+    try std.testing.expectEqualStrings("Hello", items[0].lexeme);
+    try std.testing.expectEqual(Tag.newline, items[1].tag);
+    try std.testing.expectEqual(Tag.at_directive, items[2].tag);
+    try std.testing.expectEqualStrings("speaker", items[2].lexeme);
+    try std.testing.expectEqual(Tag.identifier, items[3].tag);
+    try std.testing.expectEqual(Tag.newline, items[4].tag);
+    try std.testing.expectEqual(Tag.text_chunk, items[5].tag);
+    try std.testing.expectEqualStrings("How are you?", items[5].lexeme);
+}
+
+test "scenario: bare @ is an error" {
+    const allocator = std.testing.allocator;
+    var result = try collectScenarioTokens("@\n", allocator);
     defer result.tokens.deinit(allocator);
     defer result.diags.deinit();
 

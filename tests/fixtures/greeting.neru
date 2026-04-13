@@ -1,0 +1,7 @@
+@speaker Alice
+Hello, traveler.
+@wait 500
+How are you today?
+@clear
+@speaker Bob
+Just passing through.

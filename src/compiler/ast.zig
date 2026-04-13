@@ -19,6 +19,12 @@ pub const Node = union(enum) {
     assign_stmt: AssignStmt,
     expr_stmt: ExprStmt,
 
+    // Scenario
+    text_line: TextLine,
+    speaker_directive: SpeakerDirective,
+    wait_directive: WaitDirective,
+    clear_directive: ClearDirective,
+
     // Expressions
     binary_expr: BinaryExpr,
     unary_expr: UnaryExpr,
@@ -45,6 +51,10 @@ pub const Node = union(enum) {
             .continue_stmt => |n| n.span,
             .assign_stmt => |n| n.span,
             .expr_stmt => |n| n.span,
+            .text_line => |n| n.span,
+            .speaker_directive => |n| n.span,
+            .wait_directive => |n| n.span,
+            .clear_directive => |n| n.span,
             .binary_expr => |n| n.span,
             .unary_expr => |n| n.span,
             .call_expr => |n| n.span,
@@ -130,6 +140,35 @@ pub const AssignOp = enum {
 
 pub const ExprStmt = struct {
     expr: NodeIndex,
+    span: Span,
+};
+
+// ---- Scenario nodes ----
+
+pub const TextSegment = union(enum) {
+    /// Literal text chunk (includes whitespace).
+    text: []const u8,
+    /// Embedded `{expression}` — the expression's NodeIndex.
+    expr: NodeIndex,
+};
+
+pub const TextLine = struct {
+    segments: []const TextSegment,
+    span: Span,
+};
+
+pub const SpeakerDirective = struct {
+    /// Speaker name (identifier lexeme or unquoted string contents).
+    name: []const u8,
+    span: Span,
+};
+
+pub const WaitDirective = struct {
+    ms: u32,
+    span: Span,
+};
+
+pub const ClearDirective = struct {
     span: Span,
 };
 

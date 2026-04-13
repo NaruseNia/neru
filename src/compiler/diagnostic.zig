@@ -26,18 +26,27 @@ pub const Diagnostic = struct {
 pub const DiagnosticList = struct {
     items: std.ArrayList(Diagnostic) = .empty,
     allocator: std.mem.Allocator,
+    message_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) DiagnosticList {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .message_arena = std.heap.ArenaAllocator.init(allocator),
+        };
     }
 
     pub fn deinit(self: *DiagnosticList) void {
         self.items.deinit(self.allocator);
+        self.message_arena.deinit();
+    }
+
+    fn ownMessage(self: *DiagnosticList, message: []const u8) []const u8 {
+        return self.message_arena.allocator().dupe(u8, message) catch message;
     }
 
     pub fn addError(self: *DiagnosticList, phase: Phase, span: Span, message: []const u8) void {
         self.items.append(self.allocator, .{
-            .message = message,
+            .message = self.ownMessage(message),
             .span = span,
             .severity = .@"error",
             .phase = phase,
@@ -46,7 +55,7 @@ pub const DiagnosticList = struct {
 
     pub fn addWarning(self: *DiagnosticList, phase: Phase, span: Span, message: []const u8) void {
         self.items.append(self.allocator, .{
-            .message = message,
+            .message = self.ownMessage(message),
             .span = span,
             .severity = .warning,
             .phase = phase,
