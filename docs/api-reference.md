@@ -4,20 +4,29 @@
 
 ### `neru compile <file>`
 
-`.nerul` ファイルをバイトコード（`.neruc`）にコンパイルする。
+`.nerul` / `.neru` ファイルをバイトコード（`.neruc`）にコンパイルする。
 
 ```sh
 $ neru compile script.nerul
 compiled: script.nerul -> script.neruc
 ```
 
-### `neru run <file>`
+### `neru run [--mock] <file>`
 
-`.nerul` ファイルをコンパイルし、VM で即時実行する。最後の式の値を標準出力に表示する。
+ファイルをコンパイルし VM で即時実行する。
+
+- 拡張子が `.neru` ならシナリオモードで、`.nerul` ならロジックモードでレキサーを起動する。
+- `--mock` を付けると組み込みモックエンジンがイベント駆動で実行を進め、各イベントを `stdout` に表示する。テキストは即 ack、選択肢は最初の `visible` を選び、ウェイトは即完了扱い。
+- 指定なしの場合はロジックスクリプト向けに `execute()` で一気に完了させ、最後の式の値を出力する。
 
 ```sh
 $ neru run script.nerul
 55
+
+$ neru run --mock script.neru
+[speaker] Alice
+[text] Alice: Hello.
+...
 ```
 
 ### `neru help`
@@ -137,11 +146,157 @@ fn factorial(n) {
 
 ---
 
+## 言語構文（シナリオ層 `.neru`）
+
+### テキスト行と補間
+
+行頭が `@` / `#` / `-` 以外なら、その行はテキストとして `emit_text` される。テキスト中の `{expr}` は実行時に評価され、非文字列は自動的に文字列へ coerce される (`to_str` オペコード経由)。
+
+```
+これは地の文です。
+名前は {name} です。
+```
+
+### 話者 / 待機 / クリア
+
+```
+@speaker Alice               // 以降の emit_text に speaker=Alice が乗る
+@speaker "Student A"         // スペースを含む話者は文字列で指定
+@wait 500                    // 500ms ウェイトイベント
+@clear                       // テキスト表示をクリア
+```
+
+### 演出命令 (media directive)
+
+位置引数 1 つと、任意個の `--key=value` オプション。値は `int` / `float` / `string` / `ident` (シンボル扱い) / `bool`。
+
+```
+@bg forest.png --fade=slow --duration=500
+@show taro --pos=center
+@hide taro
+@bgm theme.ogg --volume=0.8
+@bgm_stop
+@se door.wav
+@transition wipe --direction=left
+```
+
+`forest.png` のようにドットを含むパスはクオート無しで書ける。スペースを含むパスは `"..."` でクオートする。
+
+### ラベル / ジャンプ / 選択肢
+
+```
+#start
+@speaker Narrator
+You stand at a crossroads.
+
+#choice
+  - "Go left" -> left
+  - "Go right" -> right
+  - "Secret route" -> secret @if 1 == 1
+
+#left
+@goto end
+#right
+@goto end
+#secret
+@goto end
+#end
+```
+
+- `#label` は行頭のジャンプ先定義。
+- `@goto identifier` は同一ファイル内ラベルへの無条件ジャンプ。
+- `#choice` 直後に `- "テキスト" -> target [@if cond]` の項目を並べる。`@if` が false の項目は event の `visible=false` として渡り、`--mock` では hidden として扱われる。
+- `@jump path [#label]` は構文のみ受理。実行時は停止し警告を出す (Phase 3.6 でモジュールシステムと合わせて完成予定)。
+
+### 条件分岐
+
+```
+@if state.active
+  Active path.
+@elif state.idle
+  Idle path.
+@else
+  Fallback.
+@end
+```
+
+### ロジック呼び出し / 式評価
+
+```
+@call play_fanfare()    // ロジック関数を呼び出す (結果は捨てる)
+@eval 1 + 2             // 式を評価して捨てる (副作用のため)
+```
+
+---
+
+## ランタイムイベント
+
+VM はシナリオを実行すると、演出を直接行う代わりに `Event` をエンジンへ渡して停止する。エンジンは `Response` を添えて `resumeWith()` を呼び、次のイベントまで再開させる。
+
+### `neru.runtime.Event`
+
+```zig
+pub const Event = union(EventTag) {
+    text_display: TextDisplay,
+    text_clear: void,
+    speaker_change: SpeakerChange,
+    bg_change: BgChange,
+    sprite_show: SpriteShow,
+    sprite_hide: SpriteHide,
+    bgm_play: BgmPlay,
+    bgm_stop: void,
+    se_play: SePlay,
+    transition: Transition,
+    choice_prompt: ChoicePrompt,
+    wait: Wait,
+    save_point: SavePoint,
+};
+```
+
+主要ペイロード:
+
+```zig
+pub const TextDisplay = struct { speaker: ?[]const u8, text: []const u8 };
+pub const ChoiceOption = struct {
+    label: []const u8,
+    target: []const u8,
+    visible: bool = true,
+};
+pub const ChoicePrompt = struct { options: []const ChoiceOption };
+pub const Wait = struct { ms: u32 };
+```
+
+### `neru.runtime.Response`
+
+```zig
+pub const Response = union(enum) {
+    none: void,
+    text_ack: void,
+    wait_completed: void,
+    choice_selected: u32,
+};
+```
+
+`choice_selected` は元の項目インデックス (非表示項目も含む) で返す。VM はそれを使って `emit_choice` に埋め込まれたジャンプテーブルからジャンプ先を決める。
+
+---
+
 ## Zig ライブラリ API
 
-neru は Zig ライブラリとしても利用可能。`@import("neru")` でインポートする。
+### 依存の追加
 
-主要な型はバレルファイルから直接アクセスできる:
+```sh
+zig fetch --save=neru git+https://github.com/NaruseNia/neru#v0.2.0
+```
+
+`build.zig`:
+
+```zig
+const neru_dep = b.dependency("neru", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("neru", neru_dep.module("neru"));
+```
+
+バレルから主要な型へアクセスできる:
 
 ```zig
 const neru = @import("neru");
@@ -149,19 +304,21 @@ const neru = @import("neru");
 // 推奨: 直接アクセス
 const VM = neru.vm.VM;
 const Lexer = neru.compiler.Lexer;
+const Event = neru.runtime.Event;
+const Response = neru.runtime.Response;
 
 // 詳細なサブモジュールも利用可能
 const opcodes = neru.vm.opcodes;
 const token = neru.compiler.token;
+const event_mod = neru.runtime.event;
 ```
 
-### コンパイラパイプライン
+### コンパイラパイプライン (ロジック)
 
 ```zig
 const neru = @import("neru");
 const std = @import("std");
 
-// 1. 初期化
 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 defer arena.deinit();
 const allocator = arena.allocator();
@@ -169,20 +326,48 @@ const allocator = arena.allocator();
 var diags = neru.compiler.DiagnosticList.init(allocator);
 var nodes = neru.compiler.NodeStore.init(allocator);
 
-// 2. レキサー + パーサー
 const source = "let x = 42\n";
-var lexer = neru.compiler.Lexer.init(source, &diags);
+var lexer = neru.compiler.Lexer.init(source, &diags, .logic);
 var parser = neru.compiler.Parser.init(allocator, &lexer, &nodes, &diags);
 const root = try parser.parseProgram();
 
-// 3. コードジェネレーション
 var compiler = neru.compiler.Compiler.init(allocator, &nodes, &diags);
 const module = try compiler.compile(root);
 
-// 4. VM 実行
 var vm = neru.vm.VM.init(allocator);
+defer vm.deinit();
 vm.load(module);
 const result = try vm.execute();
+```
+
+### コンパイラパイプライン (シナリオ + イベント駆動)
+
+```zig
+// .neru ファイルはシナリオモードで
+var lexer = neru.compiler.Lexer.init(source, &diags, .scenario);
+// パース / コンパイルは同じ
+
+var vm = neru.vm.VM.init(allocator);
+defer vm.deinit();
+vm.load(module);
+
+while (try vm.runUntilEvent()) |event| {
+    switch (event) {
+        .text_display => |td| renderText(td.speaker, td.text),
+        .choice_prompt => |cp| {
+            const idx = askUser(cp.options);
+            vm.resumeWith(.{ .choice_selected = idx });
+            continue;
+        },
+        .wait => |w| {
+            sleepMs(w.ms);
+            vm.resumeWith(.{ .wait_completed = {} });
+            continue;
+        },
+        else => {},
+    }
+    vm.resumeWith(.{ .none = {} });
+}
 ```
 
 ### 主要な型
@@ -190,9 +375,15 @@ const result = try vm.execute();
 #### `neru.compiler.Lexer`
 
 ```zig
-fn init(source: []const u8, diagnostics: *DiagnosticList) Lexer
+pub const Mode = enum { logic, scenario,
+    pub fn fromPath(path: []const u8) Mode,
+};
+
+fn init(source: []const u8, diagnostics: *DiagnosticList, initial_mode: Mode) Lexer
 fn next(self: *Lexer) Token
 ```
+
+**Phase 2 以降は `initial_mode` が必須**。ファイルパスから自動判定するなら `Mode.fromPath(path)` を使う。
 
 #### `neru.compiler.Parser`
 
@@ -221,10 +412,19 @@ fn deserialize(data: []const u8, allocator) !CompiledModule
 ```zig
 fn init(allocator) VM
 fn load(self: *VM, module: CompiledModule) void
-fn execute(self: *VM) VMError!?Value
-fn currentSourceLine(self: *const VM) u32
 fn deinit(self: *VM) void
+
+// イベント駆動 API (推奨)
+fn runUntilEvent(self: *VM) VMError!?Event
+fn resumeWith(self: *VM, response: Response) void
+
+// ロジックのみのスクリプト用: 実行完了まで run して最終値を返す
+fn execute(self: *VM) VMError!?Value
+
+fn currentSourceLine(self: *const VM) u32
 ```
+
+`runUntilEvent` が返す `Event` は VM 所有のメモリを指すスライスを含む。次の `runUntilEvent` / `resumeWith` 呼び出しで無効化される。
 
 #### `neru.vm.Value`
 
@@ -284,7 +484,7 @@ const Value = union(enum) {
 | `0x05` | `pop` | - | TOS を破棄 |
 | `0x10` | `load_local` | u16 | ローカル変数を読み込み |
 | `0x11` | `store_local` | u16 | ローカル変数に格納 |
-| `0x20` | `add` | - | 加算 |
+| `0x20` | `add` | - | 加算 (文字列は連結) |
 | `0x21` | `sub` | - | 減算 |
 | `0x22` | `mul` | - | 乗算 |
 | `0x23` | `div` | - | 除算 |
@@ -304,10 +504,18 @@ const Value = union(enum) {
 | `0x52` | `jump_if_not` | i32 | 偽ならジャンプ |
 | `0x53` | `call` | u16 + u8 | 関数呼び出し (func_id, argc) |
 | `0x54` | `ret` | - | 関数から復帰 |
-| `0x60` | `make_array` | u16 | 配列生成 |
-| `0x61` | `make_map` | u16 | マップ生成 |
-| `0x62` | `load_index` | - | インデックスアクセス |
-| `0x63` | `store_index` | - | インデックス書き込み |
-| `0x64` | `load_member` | u16 | メンバーアクセス |
-| `0x65` | `store_member` | u16 | メンバー書き込み |
+| `0x60` | `make_array` | u16 | 配列生成 (Phase 3 で完成) |
+| `0x61` | `make_map` | u16 | マップ生成 (Phase 3 で完成) |
+| `0x62` | `load_index` | - | インデックスアクセス (Phase 3) |
+| `0x63` | `store_index` | - | インデックス書き込み (Phase 3) |
+| `0x64` | `load_member` | u16 | メンバーアクセス (Phase 3) |
+| `0x65` | `store_member` | u16 | メンバー書き込み (Phase 3) |
+| `0x70` | `emit_text` | - | TextDisplay イベント発行、一時停止。stack: `[speaker_or_null, text]` |
+| `0x71` | `emit_speaker` | - | SpeakerChange イベント発行。stack: `[speaker_or_null]` |
+| `0x72` | `emit_wait` | u32 | Wait イベント発行 (ms 即値) |
+| `0x73` | `emit_save_point` | - | SavePoint イベント。stack: `[name]` |
+| `0x74` | `emit_directive` | u8 + u8 | DirectiveKind + arg_count。primary + 引数ペアを stack から pop |
+| `0x75` | `emit_choice` | u8 + N×i32 | count + count 個のジャンプオフセット。stack: 各項目 `[visible, label, target]` |
+| `0x76` | `emit_text_clear` | - | TextClear イベント |
+| `0x80` | `to_str` | - | TOS の値を文字列へ coerce |
 | `0xFF` | `halt` | - | 実行停止 |
