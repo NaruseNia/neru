@@ -153,10 +153,10 @@ docs/
 
 ### 2.5 イベントシステム
 
-- [ ] Event 型の定義 (`event.zig`)
-- [ ] イベントキューの実装
-- [ ] VM の `run_until_event()` / `resume()` インターフェース
-- [ ] テスト用のモックエンジン
+- [x] Event 型の定義 (`event.zig`)
+- [x] イベントキューの実装
+- [x] VM の `run_until_event()` / `resume()` インターフェース
+- [x] テスト用のモックエンジン
 
 ### Phase 2 完了基準
 
