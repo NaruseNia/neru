@@ -433,6 +433,17 @@ pub const VM = struct {
                     }
                 },
 
+                .call_method => {
+                    const name_idx = self.readU16();
+                    const argc = self.bytecode[self.ip];
+                    self.ip += 1;
+                    const method_name = switch (self.constants[name_idx]) {
+                        .string => |s| s,
+                        else => return error.RuntimeError,
+                    };
+                    try self.executeMethod(method_name, argc);
+                },
+
                 .emit_text => {
                     const text = try self.popString();
                     const speaker = try self.popStringOrNull();
@@ -690,6 +701,96 @@ pub const VM = struct {
             }
         }
         return best_line;
+    }
+
+    fn executeMethod(self: *VM, method_name: []const u8, argc: u8) VMError!void {
+        // Stack layout: [receiver, arg1, arg2, ..., argN]
+        // receiver is at stack.top - argc - 1
+        const receiver_idx = self.stack.top - @as(usize, argc) - 1;
+        const receiver = self.stack.items[receiver_idx];
+
+        switch (receiver) {
+            .array => |arr| {
+                if (std.mem.eql(u8, method_name, "push")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const val = try self.pop();
+                    _ = try self.pop(); // pop receiver
+                    arr.items.append(arr.allocator, val) catch return error.RuntimeError;
+                    try self.push(.{ .null_val = {} });
+                } else if (std.mem.eql(u8, method_name, "pop")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop(); // pop receiver
+                    const val: Value = if (arr.items.items.len > 0) arr.items.pop().? else .{ .null_val = {} };
+                    try self.push(val);
+                } else if (std.mem.eql(u8, method_name, "len")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop(); // pop receiver
+                    try self.push(.{ .int = @intCast(arr.items.items.len) });
+                } else if (std.mem.eql(u8, method_name, "contains")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const needle = try self.pop();
+                    _ = try self.pop(); // pop receiver
+                    var found = false;
+                    for (arr.items.items) |item| {
+                        if (item.eql(needle)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    try self.push(.{ .bool_val = found });
+                } else {
+                    return error.RuntimeError;
+                }
+            },
+            .map => |m| {
+                if (std.mem.eql(u8, method_name, "keys")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop(); // pop receiver
+                    const keys_arr = self.allocateArray() catch return error.RuntimeError;
+                    const key_slice = m.entries.keys();
+                    keys_arr.items.ensureTotalCapacity(keys_arr.allocator, key_slice.len) catch return error.RuntimeError;
+                    for (key_slice) |k| {
+                        keys_arr.items.appendAssumeCapacity(.{ .string = k });
+                    }
+                    try self.push(.{ .array = keys_arr });
+                } else if (std.mem.eql(u8, method_name, "has")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const key_val = try self.pop();
+                    _ = try self.pop(); // pop receiver
+                    const key = switch (key_val) {
+                        .string => |s| s,
+                        else => return error.TypeError,
+                    };
+                    try self.push(.{ .bool_val = m.entries.contains(key) });
+                } else if (std.mem.eql(u8, method_name, "remove")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const key_val = try self.pop();
+                    _ = try self.pop(); // pop receiver
+                    const key = switch (key_val) {
+                        .string => |s| s,
+                        else => return error.TypeError,
+                    };
+                    _ = m.entries.orderedRemove(key);
+                    try self.push(.{ .null_val = {} });
+                } else if (std.mem.eql(u8, method_name, "len")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop(); // pop receiver
+                    try self.push(.{ .int = @intCast(m.entries.count()) });
+                } else {
+                    return error.RuntimeError;
+                }
+            },
+            .string => {
+                if (std.mem.eql(u8, method_name, "len")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    const s = try self.pop(); // pop receiver
+                    try self.push(.{ .int = @intCast(s.string.len) });
+                } else {
+                    return error.RuntimeError;
+                }
+            },
+            else => return error.TypeError,
+        }
     }
 };
 

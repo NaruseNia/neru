@@ -845,6 +845,22 @@ pub const Compiler = struct {
 
     fn compileCall(self: *Compiler, expr: ast.CallExpr) !void {
         const callee = self.nodes.getNode(expr.callee);
+
+        // Method call: obj.method(args...)
+        if (callee == .member_expr) {
+            const mem = callee.member_expr;
+            // Push receiver object first
+            try self.compileExpr(mem.object);
+            // Push arguments
+            for (expr.args) |arg| {
+                try self.compileExpr(arg);
+            }
+            const name_idx = try self.addStringConstant(mem.member);
+            try self.emitWithU16(.call_method, name_idx);
+            self.bytecode.append(self.allocator, @intCast(expr.args.len)) catch return error.OutOfMemory;
+            return;
+        }
+
         if (callee != .identifier_expr) {
             self.diagnostics.addError(.codegen, expr.span, "callee must be an identifier");
             return;
