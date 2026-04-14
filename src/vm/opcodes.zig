@@ -45,6 +45,7 @@ pub const OpCode = enum(u8) {
     store_index = 0x63,
     load_member = 0x64,
     store_member = 0x65,
+    call_method = 0x66,
 
     // Events (scenario layer)
     emit_text = 0x70,
@@ -68,7 +69,7 @@ pub const OpCode = enum(u8) {
             .load_member, .store_member,
             => 2,
             .jump, .jump_if, .jump_if_not => 4,
-            .call => 3,
+            .call, .call_method => 3,
             .emit_wait => 4,
             .emit_directive => 2,
             .emit_choice => 1,

@@ -1,5 +1,33 @@
 const std = @import("std");
 
+/// Heap-allocated array storage, owned by the VM.
+pub const ArrayHandle = struct {
+    items: std.ArrayListUnmanaged(Value) = .empty,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) ArrayHandle {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *ArrayHandle) void {
+        self.items.deinit(self.allocator);
+    }
+};
+
+/// Heap-allocated map storage (string keys), owned by the VM.
+pub const MapHandle = struct {
+    entries: std.StringArrayHashMapUnmanaged(Value) = .empty,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) MapHandle {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *MapHandle) void {
+        self.entries.deinit(self.allocator);
+    }
+};
+
 pub const Value = union(enum) {
     int: i64,
     float: f64,
@@ -7,6 +35,8 @@ pub const Value = union(enum) {
     bool_val: bool,
     null_val: void,
     function: u16, // function table index
+    array: *ArrayHandle,
+    map: *MapHandle,
 
     pub fn isTruthy(self: Value) bool {
         return switch (self) {
@@ -16,6 +46,8 @@ pub const Value = union(enum) {
             .float => |f| f != 0.0,
             .string => |s| s.len > 0,
             .function => true,
+            .array => true,
+            .map => true,
         };
     }
 
@@ -31,6 +63,9 @@ pub const Value = union(enum) {
             .bool_val => |a| a == other.bool_val,
             .null_val => true,
             .function => |a| a == other.function,
+            // Reference equality for arrays and maps
+            .array => |a| a == other.array,
+            .map => |a| a == other.map,
         };
     }
 
@@ -42,6 +77,26 @@ pub const Value = union(enum) {
             .bool_val => |b| try writer.print("{}", .{b}),
             .null_val => try writer.print("null", .{}),
             .function => |id| try writer.print("<fn:{d}>", .{id}),
+            .array => |arr| {
+                try writer.print("[", .{});
+                for (arr.items.items, 0..) |item, idx| {
+                    if (idx > 0) try writer.print(", ", .{});
+                    try item.formatValue(writer);
+                }
+                try writer.print("]", .{});
+            },
+            .map => |m| {
+                try writer.print("{{", .{});
+                var it = m.entries.iterator();
+                var first = true;
+                while (it.next()) |entry| {
+                    if (!first) try writer.print(", ", .{});
+                    first = false;
+                    try writer.print("\"{s}\": ", .{entry.key_ptr.*});
+                    try entry.value_ptr.formatValue(writer);
+                }
+                try writer.print("}}", .{});
+            },
         }
     }
 
@@ -53,6 +108,8 @@ pub const Value = union(enum) {
             .bool_val => "bool",
             .null_val => "null",
             .function => "function",
+            .array => "array",
+            .map => "map",
         };
     }
 };

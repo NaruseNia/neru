@@ -52,8 +52,10 @@ pub const VM = struct {
 
     allocator: std.mem.Allocator,
 
-    // Strings allocated during execution
+    // Heap objects allocated during execution
     allocated_strings: std.ArrayList([]u8) = .empty,
+    allocated_arrays: std.ArrayList(*value_mod.ArrayHandle) = .empty,
+    allocated_maps: std.ArrayList(*value_mod.MapHandle) = .empty,
 
     // Event system state
     suspended: bool = false,
@@ -86,6 +88,16 @@ pub const VM = struct {
     pub fn deinit(self: *VM) void {
         for (self.allocated_strings.items) |s| self.allocator.free(s);
         self.allocated_strings.deinit(self.allocator);
+        for (self.allocated_maps.items) |m| {
+            m.deinit();
+            self.allocator.destroy(m);
+        }
+        self.allocated_maps.deinit(self.allocator);
+        for (self.allocated_arrays.items) |a| {
+            a.deinit();
+            self.allocator.destroy(a);
+        }
+        self.allocated_arrays.deinit(self.allocator);
         self.event_arena.deinit();
     }
 
@@ -304,29 +316,132 @@ pub const VM = struct {
 
                 .make_array => {
                     const count = self.readU16();
-                    // For Phase 1, arrays are not fully supported in VM
-                    // Just pop the elements and push null
-                    var i: u16 = 0;
+                    const arr = self.allocateArray() catch return error.RuntimeError;
+                    arr.items.ensureTotalCapacity(arr.allocator, count) catch return error.RuntimeError;
+                    const base = self.stack.top - count;
+                    var i: usize = 0;
                     while (i < count) : (i += 1) {
-                        _ = try self.pop();
+                        arr.items.appendAssumeCapacity(self.stack.items[base + i]);
                     }
-                    try self.push(.{ .null_val = {} });
+                    self.stack.top = base;
+                    try self.push(.{ .array = arr });
                 },
                 .make_map => {
                     const count = self.readU16();
-                    var i: u16 = 0;
-                    while (i < count * 2) : (i += 1) {
-                        _ = try self.pop();
+                    const m = self.allocateMap() catch return error.RuntimeError;
+                    m.entries.ensureTotalCapacity(m.allocator, count) catch return error.RuntimeError;
+                    const pair_count: usize = count;
+                    const base = self.stack.top - pair_count * 2;
+                    var i: usize = 0;
+                    while (i < pair_count) : (i += 1) {
+                        const key_val = self.stack.items[base + i * 2];
+                        const val = self.stack.items[base + i * 2 + 1];
+                        const key = switch (key_val) {
+                            .string => |s| s,
+                            else => return error.TypeError,
+                        };
+                        m.entries.putAssumeCapacity(key, val);
                     }
-                    try self.push(.{ .null_val = {} });
+                    self.stack.top = base;
+                    try self.push(.{ .map = m });
                 },
 
-                .load_index, .store_index, .load_member, .store_member => {
-                    // Phase 1: basic stub — skip operands
-                    if (op == .load_member or op == .store_member) {
-                        _ = self.readU16();
+                .load_index => {
+                    const index = try self.pop();
+                    const obj = try self.pop();
+                    switch (obj) {
+                        .array => |arr| {
+                            const idx = switch (index) {
+                                .int => |i| i,
+                                else => return error.TypeError,
+                            };
+                            if (idx < 0 or idx >= @as(i64, @intCast(arr.items.items.len))) {
+                                return error.RuntimeError;
+                            }
+                            try self.push(arr.items.items[@intCast(idx)]);
+                        },
+                        .map => |m| {
+                            const key = switch (index) {
+                                .string => |s| s,
+                                else => return error.TypeError,
+                            };
+                            if (m.entries.get(key)) |val| {
+                                try self.push(val);
+                            } else {
+                                try self.push(.{ .null_val = {} });
+                            }
+                        },
+                        else => return error.TypeError,
                     }
-                    return error.RuntimeError;
+                },
+                .store_index => {
+                    const index = try self.pop();
+                    const obj = try self.pop();
+                    const val = try self.pop();
+                    switch (obj) {
+                        .array => |arr| {
+                            const idx = switch (index) {
+                                .int => |i| i,
+                                else => return error.TypeError,
+                            };
+                            if (idx < 0 or idx >= @as(i64, @intCast(arr.items.items.len))) {
+                                return error.RuntimeError;
+                            }
+                            arr.items.items[@intCast(idx)] = val;
+                        },
+                        .map => |m| {
+                            const key = switch (index) {
+                                .string => |s| s,
+                                else => return error.TypeError,
+                            };
+                            m.entries.put(m.allocator, key, val) catch return error.RuntimeError;
+                        },
+                        else => return error.TypeError,
+                    }
+                },
+                .load_member => {
+                    const name_idx = self.readU16();
+                    const name = switch (self.constants[name_idx]) {
+                        .string => |s| s,
+                        else => return error.RuntimeError,
+                    };
+                    const obj = try self.pop();
+                    switch (obj) {
+                        .map => |m| {
+                            if (m.entries.get(name)) |val| {
+                                try self.push(val);
+                            } else {
+                                try self.push(.{ .null_val = {} });
+                            }
+                        },
+                        else => return error.TypeError,
+                    }
+                },
+                .store_member => {
+                    const name_idx = self.readU16();
+                    const name = switch (self.constants[name_idx]) {
+                        .string => |s| s,
+                        else => return error.RuntimeError,
+                    };
+                    const obj = try self.pop();
+                    const val = try self.pop();
+                    switch (obj) {
+                        .map => |m| {
+                            m.entries.put(m.allocator, name, val) catch return error.RuntimeError;
+                        },
+                        else => return error.TypeError,
+                    }
+                },
+
+                .call_method => {
+                    const name_idx = self.readU16();
+                    const argc = self.bytecode[self.ip];
+                    self.ip += 1;
+                    const method_name = switch (self.constants[name_idx]) {
+                        .string => |s| s,
+                        else => return error.RuntimeError,
+                    };
+                    try self.executeMethod(method_name, argc);
                 },
 
                 .emit_text => {
@@ -462,6 +577,26 @@ pub const VM = struct {
         return val;
     }
 
+    fn allocateArray(self: *VM) !*value_mod.ArrayHandle {
+        const arr = try self.allocator.create(value_mod.ArrayHandle);
+        arr.* = value_mod.ArrayHandle.init(self.allocator);
+        self.allocated_arrays.append(self.allocator, arr) catch {
+            self.allocator.destroy(arr);
+            return error.RuntimeError;
+        };
+        return arr;
+    }
+
+    fn allocateMap(self: *VM) !*value_mod.MapHandle {
+        const m = try self.allocator.create(value_mod.MapHandle);
+        m.* = value_mod.MapHandle.init(self.allocator);
+        self.allocated_maps.append(self.allocator, m) catch {
+            self.allocator.destroy(m);
+            return error.RuntimeError;
+        };
+        return m;
+    }
+
     fn popString(self: *VM) VMError![]const u8 {
         const v = try self.pop();
         return switch (v) {
@@ -516,6 +651,17 @@ pub const VM = struct {
             .bool_val => |b| self.allocator.dupe(u8, if (b) "true" else "false") catch return error.RuntimeError,
             .null_val => self.allocator.dupe(u8, "null") catch return error.RuntimeError,
             .function => |id| std.fmt.allocPrint(self.allocator, "<fn:{d}>", .{id}) catch return error.RuntimeError,
+            .array, .map => blk: {
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                v.formatValue(buf.writer(self.allocator)) catch {
+                    buf.deinit(self.allocator);
+                    return error.RuntimeError;
+                };
+                break :blk buf.toOwnedSlice(self.allocator) catch {
+                    buf.deinit(self.allocator);
+                    return error.RuntimeError;
+                };
+            },
             .string => unreachable,
         };
         self.allocated_strings.append(self.allocator, s) catch {
@@ -555,6 +701,96 @@ pub const VM = struct {
             }
         }
         return best_line;
+    }
+
+    fn executeMethod(self: *VM, method_name: []const u8, argc: u8) VMError!void {
+        // Stack layout: [receiver, arg1, arg2, ..., argN]
+        // receiver is at stack.top - argc - 1
+        const receiver_idx = self.stack.top - @as(usize, argc) - 1;
+        const receiver = self.stack.items[receiver_idx];
+
+        switch (receiver) {
+            .array => |arr| {
+                if (std.mem.eql(u8, method_name, "push")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const val = try self.pop();
+                    _ = try self.pop(); // pop receiver
+                    arr.items.append(arr.allocator, val) catch return error.RuntimeError;
+                    try self.push(.{ .null_val = {} });
+                } else if (std.mem.eql(u8, method_name, "pop")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop(); // pop receiver
+                    const val: Value = if (arr.items.items.len > 0) arr.items.pop().? else .{ .null_val = {} };
+                    try self.push(val);
+                } else if (std.mem.eql(u8, method_name, "len")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop(); // pop receiver
+                    try self.push(.{ .int = @intCast(arr.items.items.len) });
+                } else if (std.mem.eql(u8, method_name, "contains")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const needle = try self.pop();
+                    _ = try self.pop(); // pop receiver
+                    var found = false;
+                    for (arr.items.items) |item| {
+                        if (item.eql(needle)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    try self.push(.{ .bool_val = found });
+                } else {
+                    return error.RuntimeError;
+                }
+            },
+            .map => |m| {
+                if (std.mem.eql(u8, method_name, "keys")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop(); // pop receiver
+                    const keys_arr = self.allocateArray() catch return error.RuntimeError;
+                    const key_slice = m.entries.keys();
+                    keys_arr.items.ensureTotalCapacity(keys_arr.allocator, key_slice.len) catch return error.RuntimeError;
+                    for (key_slice) |k| {
+                        keys_arr.items.appendAssumeCapacity(.{ .string = k });
+                    }
+                    try self.push(.{ .array = keys_arr });
+                } else if (std.mem.eql(u8, method_name, "has")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const key_val = try self.pop();
+                    _ = try self.pop(); // pop receiver
+                    const key = switch (key_val) {
+                        .string => |s| s,
+                        else => return error.TypeError,
+                    };
+                    try self.push(.{ .bool_val = m.entries.contains(key) });
+                } else if (std.mem.eql(u8, method_name, "remove")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const key_val = try self.pop();
+                    _ = try self.pop(); // pop receiver
+                    const key = switch (key_val) {
+                        .string => |s| s,
+                        else => return error.TypeError,
+                    };
+                    _ = m.entries.orderedRemove(key);
+                    try self.push(.{ .null_val = {} });
+                } else if (std.mem.eql(u8, method_name, "len")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop(); // pop receiver
+                    try self.push(.{ .int = @intCast(m.entries.count()) });
+                } else {
+                    return error.RuntimeError;
+                }
+            },
+            .string => {
+                if (std.mem.eql(u8, method_name, "len")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    const s = try self.pop(); // pop receiver
+                    try self.push(.{ .int = @intCast(s.string.len) });
+                } else {
+                    return error.RuntimeError;
+                }
+            },
+            else => return error.TypeError,
+        }
     }
 };
 
@@ -1366,4 +1602,193 @@ test "VM: source line lookup" {
 
     vm.ip = 15;
     try std.testing.expectEqual(@as(u32, 3), vm.currentSourceLine());
+}
+
+// ---- Phase 3.1: Data structure tests ----
+
+test "VM: array literal" {
+    const val = try runAndGetLocal(
+        \\let arr = [1, 2, 3]
+        \\let length = arr.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: empty array" {
+    const val = try runAndGetLocal(
+        \\let arr = []
+        \\let length = arr.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 0), val.int);
+}
+
+test "VM: array index access" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\let x = arr[1]
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 20), val.int);
+}
+
+test "VM: array index assignment" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\arr[1] = 99
+        \\let x = arr[1]
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 99), val.int);
+}
+
+test "VM: array push" {
+    const val = try runAndGetLocal(
+        \\let arr = [1, 2]
+        \\arr.push(3)
+        \\let length = arr.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: array pop" {
+    const val = try runAndGetLocal(
+        \\let arr = [1, 2, 3]
+        \\let popped = arr.pop()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: array contains" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\let found = arr.contains(20)
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: array contains false" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\let found = arr.contains(99)
+        \\
+    , 1);
+    try std.testing.expect(!val.bool_val);
+}
+
+test "VM: map literal" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1, "b": 2}
+        \\let length = m.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 2), val.int);
+}
+
+test "VM: map index access" {
+    const val = try runAndGetLocal(
+        \\let m = {"x": 42}
+        \\let v = m["x"]
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: map member access" {
+    const val = try runAndGetLocal(
+        \\let m = {"x": 42}
+        \\let v = m.x
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: map index assignment" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1}
+        \\m["b"] = 2
+        \\let length = m.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 2), val.int);
+}
+
+test "VM: map has" {
+    const val = try runAndGetLocal(
+        \\let m = {"key": 1}
+        \\let found = m.has("key")
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: map has false" {
+    const val = try runAndGetLocal(
+        \\let m = {"key": 1}
+        \\let found = m.has("nope")
+        \\
+    , 1);
+    try std.testing.expect(!val.bool_val);
+}
+
+test "VM: map remove" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1, "b": 2}
+        \\m.remove("a")
+        \\let length = m.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 1), val.int);
+}
+
+test "VM: map keys" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1, "b": 2}
+        \\let k = m.keys()
+        \\let length = k.len()
+        \\
+    , 2);
+    try std.testing.expectEqual(@as(i64, 2), val.int);
+}
+
+test "VM: nested array" {
+    const val = try runAndGetLocal(
+        \\let arr = [[1, 2], [3, 4]]
+        \\let inner = arr[1]
+        \\let x = inner[0]
+        \\
+    , 2);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: nested map" {
+    const val = try runAndGetLocal(
+        \\let m = {"inner": {"val": 99}}
+        \\let v = m["inner"]
+        \\let x = v["val"]
+        \\
+    , 2);
+    try std.testing.expectEqual(@as(i64, 99), val.int);
+}
+
+test "VM: string len method" {
+    const val = try runAndGetLocal(
+        \\let s = "hello"
+        \\let n = s.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 5), val.int);
+}
+
+test "VM: map missing key returns null" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1}
+        \\let v = m["missing"]
+        \\
+    , 1);
+    try std.testing.expect(val == .null_val);
 }
