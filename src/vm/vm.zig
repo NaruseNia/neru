@@ -346,12 +346,91 @@ pub const VM = struct {
                     try self.push(.{ .map = m });
                 },
 
-                .load_index, .store_index, .load_member, .store_member => {
-                    // Phase 3: stub — will be implemented in next task
-                    if (op == .load_member or op == .store_member) {
-                        _ = self.readU16();
+                .load_index => {
+                    const index = try self.pop();
+                    const obj = try self.pop();
+                    switch (obj) {
+                        .array => |arr| {
+                            const idx = switch (index) {
+                                .int => |i| i,
+                                else => return error.TypeError,
+                            };
+                            if (idx < 0 or idx >= @as(i64, @intCast(arr.items.items.len))) {
+                                return error.RuntimeError;
+                            }
+                            try self.push(arr.items.items[@intCast(idx)]);
+                        },
+                        .map => |m| {
+                            const key = switch (index) {
+                                .string => |s| s,
+                                else => return error.TypeError,
+                            };
+                            if (m.entries.get(key)) |val| {
+                                try self.push(val);
+                            } else {
+                                try self.push(.{ .null_val = {} });
+                            }
+                        },
+                        else => return error.TypeError,
                     }
-                    return error.RuntimeError;
+                },
+                .store_index => {
+                    const index = try self.pop();
+                    const obj = try self.pop();
+                    const val = try self.pop();
+                    switch (obj) {
+                        .array => |arr| {
+                            const idx = switch (index) {
+                                .int => |i| i,
+                                else => return error.TypeError,
+                            };
+                            if (idx < 0 or idx >= @as(i64, @intCast(arr.items.items.len))) {
+                                return error.RuntimeError;
+                            }
+                            arr.items.items[@intCast(idx)] = val;
+                        },
+                        .map => |m| {
+                            const key = switch (index) {
+                                .string => |s| s,
+                                else => return error.TypeError,
+                            };
+                            m.entries.put(m.allocator, key, val) catch return error.RuntimeError;
+                        },
+                        else => return error.TypeError,
+                    }
+                },
+                .load_member => {
+                    const name_idx = self.readU16();
+                    const name = switch (self.constants[name_idx]) {
+                        .string => |s| s,
+                        else => return error.RuntimeError,
+                    };
+                    const obj = try self.pop();
+                    switch (obj) {
+                        .map => |m| {
+                            if (m.entries.get(name)) |val| {
+                                try self.push(val);
+                            } else {
+                                try self.push(.{ .null_val = {} });
+                            }
+                        },
+                        else => return error.TypeError,
+                    }
+                },
+                .store_member => {
+                    const name_idx = self.readU16();
+                    const name = switch (self.constants[name_idx]) {
+                        .string => |s| s,
+                        else => return error.RuntimeError,
+                    };
+                    const obj = try self.pop();
+                    const val = try self.pop();
+                    switch (obj) {
+                        .map => |m| {
+                            m.entries.put(m.allocator, name, val) catch return error.RuntimeError;
+                        },
+                        else => return error.TypeError,
+                    }
                 },
 
                 .emit_text => {
