@@ -52,8 +52,10 @@ pub const VM = struct {
 
     allocator: std.mem.Allocator,
 
-    // Strings allocated during execution
+    // Heap objects allocated during execution
     allocated_strings: std.ArrayList([]u8) = .empty,
+    allocated_arrays: std.ArrayList(*value_mod.ArrayHandle) = .empty,
+    allocated_maps: std.ArrayList(*value_mod.MapHandle) = .empty,
 
     // Event system state
     suspended: bool = false,
@@ -86,6 +88,16 @@ pub const VM = struct {
     pub fn deinit(self: *VM) void {
         for (self.allocated_strings.items) |s| self.allocator.free(s);
         self.allocated_strings.deinit(self.allocator);
+        for (self.allocated_maps.items) |m| {
+            m.deinit();
+            self.allocator.destroy(m);
+        }
+        self.allocated_maps.deinit(self.allocator);
+        for (self.allocated_arrays.items) |a| {
+            a.deinit();
+            self.allocator.destroy(a);
+        }
+        self.allocated_arrays.deinit(self.allocator);
         self.event_arena.deinit();
     }
 
@@ -304,25 +316,38 @@ pub const VM = struct {
 
                 .make_array => {
                     const count = self.readU16();
-                    // For Phase 1, arrays are not fully supported in VM
-                    // Just pop the elements and push null
-                    var i: u16 = 0;
+                    const arr = self.allocateArray() catch return error.RuntimeError;
+                    arr.items.ensureTotalCapacity(arr.allocator, count) catch return error.RuntimeError;
+                    const base = self.stack.top - count;
+                    var i: usize = 0;
                     while (i < count) : (i += 1) {
-                        _ = try self.pop();
+                        arr.items.appendAssumeCapacity(self.stack.items[base + i]);
                     }
-                    try self.push(.{ .null_val = {} });
+                    self.stack.top = base;
+                    try self.push(.{ .array = arr });
                 },
                 .make_map => {
                     const count = self.readU16();
-                    var i: u16 = 0;
-                    while (i < count * 2) : (i += 1) {
-                        _ = try self.pop();
+                    const m = self.allocateMap() catch return error.RuntimeError;
+                    m.entries.ensureTotalCapacity(m.allocator, count) catch return error.RuntimeError;
+                    const pair_count: usize = count;
+                    const base = self.stack.top - pair_count * 2;
+                    var i: usize = 0;
+                    while (i < pair_count) : (i += 1) {
+                        const key_val = self.stack.items[base + i * 2];
+                        const val = self.stack.items[base + i * 2 + 1];
+                        const key = switch (key_val) {
+                            .string => |s| s,
+                            else => return error.TypeError,
+                        };
+                        m.entries.putAssumeCapacity(key, val);
                     }
-                    try self.push(.{ .null_val = {} });
+                    self.stack.top = base;
+                    try self.push(.{ .map = m });
                 },
 
                 .load_index, .store_index, .load_member, .store_member => {
-                    // Phase 1: basic stub — skip operands
+                    // Phase 3: stub — will be implemented in next task
                     if (op == .load_member or op == .store_member) {
                         _ = self.readU16();
                     }
@@ -462,6 +487,26 @@ pub const VM = struct {
         return val;
     }
 
+    fn allocateArray(self: *VM) !*value_mod.ArrayHandle {
+        const arr = try self.allocator.create(value_mod.ArrayHandle);
+        arr.* = value_mod.ArrayHandle.init(self.allocator);
+        self.allocated_arrays.append(self.allocator, arr) catch {
+            self.allocator.destroy(arr);
+            return error.RuntimeError;
+        };
+        return arr;
+    }
+
+    fn allocateMap(self: *VM) !*value_mod.MapHandle {
+        const m = try self.allocator.create(value_mod.MapHandle);
+        m.* = value_mod.MapHandle.init(self.allocator);
+        self.allocated_maps.append(self.allocator, m) catch {
+            self.allocator.destroy(m);
+            return error.RuntimeError;
+        };
+        return m;
+    }
+
     fn popString(self: *VM) VMError![]const u8 {
         const v = try self.pop();
         return switch (v) {
@@ -516,6 +561,17 @@ pub const VM = struct {
             .bool_val => |b| self.allocator.dupe(u8, if (b) "true" else "false") catch return error.RuntimeError,
             .null_val => self.allocator.dupe(u8, "null") catch return error.RuntimeError,
             .function => |id| std.fmt.allocPrint(self.allocator, "<fn:{d}>", .{id}) catch return error.RuntimeError,
+            .array, .map => blk: {
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                v.formatValue(buf.writer(self.allocator)) catch {
+                    buf.deinit(self.allocator);
+                    return error.RuntimeError;
+                };
+                break :blk buf.toOwnedSlice(self.allocator) catch {
+                    buf.deinit(self.allocator);
+                    return error.RuntimeError;
+                };
+            },
             .string => unreachable,
         };
         self.allocated_strings.append(self.allocator, s) catch {
