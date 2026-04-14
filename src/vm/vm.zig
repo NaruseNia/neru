@@ -1603,3 +1603,192 @@ test "VM: source line lookup" {
     vm.ip = 15;
     try std.testing.expectEqual(@as(u32, 3), vm.currentSourceLine());
 }
+
+// ---- Phase 3.1: Data structure tests ----
+
+test "VM: array literal" {
+    const val = try runAndGetLocal(
+        \\let arr = [1, 2, 3]
+        \\let length = arr.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: empty array" {
+    const val = try runAndGetLocal(
+        \\let arr = []
+        \\let length = arr.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 0), val.int);
+}
+
+test "VM: array index access" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\let x = arr[1]
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 20), val.int);
+}
+
+test "VM: array index assignment" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\arr[1] = 99
+        \\let x = arr[1]
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 99), val.int);
+}
+
+test "VM: array push" {
+    const val = try runAndGetLocal(
+        \\let arr = [1, 2]
+        \\arr.push(3)
+        \\let length = arr.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: array pop" {
+    const val = try runAndGetLocal(
+        \\let arr = [1, 2, 3]
+        \\let popped = arr.pop()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: array contains" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\let found = arr.contains(20)
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: array contains false" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\let found = arr.contains(99)
+        \\
+    , 1);
+    try std.testing.expect(!val.bool_val);
+}
+
+test "VM: map literal" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1, "b": 2}
+        \\let length = m.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 2), val.int);
+}
+
+test "VM: map index access" {
+    const val = try runAndGetLocal(
+        \\let m = {"x": 42}
+        \\let v = m["x"]
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: map member access" {
+    const val = try runAndGetLocal(
+        \\let m = {"x": 42}
+        \\let v = m.x
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: map index assignment" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1}
+        \\m["b"] = 2
+        \\let length = m.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 2), val.int);
+}
+
+test "VM: map has" {
+    const val = try runAndGetLocal(
+        \\let m = {"key": 1}
+        \\let found = m.has("key")
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: map has false" {
+    const val = try runAndGetLocal(
+        \\let m = {"key": 1}
+        \\let found = m.has("nope")
+        \\
+    , 1);
+    try std.testing.expect(!val.bool_val);
+}
+
+test "VM: map remove" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1, "b": 2}
+        \\m.remove("a")
+        \\let length = m.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 1), val.int);
+}
+
+test "VM: map keys" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1, "b": 2}
+        \\let k = m.keys()
+        \\let length = k.len()
+        \\
+    , 2);
+    try std.testing.expectEqual(@as(i64, 2), val.int);
+}
+
+test "VM: nested array" {
+    const val = try runAndGetLocal(
+        \\let arr = [[1, 2], [3, 4]]
+        \\let inner = arr[1]
+        \\let x = inner[0]
+        \\
+    , 2);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: nested map" {
+    const val = try runAndGetLocal(
+        \\let m = {"inner": {"val": 99}}
+        \\let v = m["inner"]
+        \\let x = v["val"]
+        \\
+    , 2);
+    try std.testing.expectEqual(@as(i64, 99), val.int);
+}
+
+test "VM: string len method" {
+    const val = try runAndGetLocal(
+        \\let s = "hello"
+        \\let n = s.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 5), val.int);
+}
+
+test "VM: map missing key returns null" {
+    const val = try runAndGetLocal(
+        \\let m = {"a": 1}
+        \\let v = m["missing"]
+        \\
+    , 1);
+    try std.testing.expect(val == .null_val);
+}
