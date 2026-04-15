@@ -259,6 +259,10 @@ pub fn compare(a: Value, b: Value, op: enum { lt, gt, lte, gte }) !Value {
             .float => |bf| std.math.order(af, bf),
             else => return error.TypeError,
         },
+        .string => |as| switch (b) {
+            .string => |bs| std.mem.order(u8, as, bs),
+            else => return error.TypeError,
+        },
         else => return error.TypeError,
     };
     const result = switch (op) {
