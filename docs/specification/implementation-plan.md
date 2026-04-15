@@ -187,11 +187,11 @@ docs/
 
 ### 3.3 ループの完全実装
 
-- [ ] `for item in array { ... }`
-- [ ] `for i in 0..n { ... }`（範囲ループ）
-- [ ] `while condition { ... }`
-- [ ] `break` / `continue`
-- [ ] ネストしたループ
+- [x] `for item in array { ... }`
+- [x] `for i in 0..n { ... }`（範囲ループ）
+- [x] `while condition { ... }`
+- [x] `break` / `continue`
+- [x] ネストしたループ
 
 ### 3.4 文字列操作
 

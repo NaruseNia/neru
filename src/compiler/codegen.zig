@@ -176,7 +176,8 @@ const LabelPatch = struct {
 
 const LoopContext = struct {
     break_patches: std.ArrayList(u32),
-    continue_target: u32,
+    continue_patches: std.ArrayList(u32),
+    continue_target: ?u32, // null = use forward-patching; set = direct jump
 };
 
 pub const Compiler = struct {
@@ -241,7 +242,10 @@ pub const Compiler = struct {
         self.debug_lines.deinit(self.allocator);
         self.locals.deinit(self.allocator);
         self.upvalues.deinit(self.allocator);
-        for (self.loop_stack.items) |*l| l.break_patches.deinit(self.allocator);
+        for (self.loop_stack.items) |*l| {
+            l.break_patches.deinit(self.allocator);
+            l.continue_patches.deinit(self.allocator);
+        }
         self.loop_stack.deinit(self.allocator);
         self.labels.deinit(self.allocator);
         var it = self.pending_label_jumps.valueIterator();
@@ -607,8 +611,7 @@ pub const Compiler = struct {
         if (iterable_node == .range_expr) {
             try self.compileRangeFor(stmt, iterable_node.range_expr);
         } else {
-            // For non-range iteration, just compile iterable and error for now
-            self.diagnostics.addError(.codegen, stmt.span, "only range-based for loops supported in Phase 1");
+            try self.compileArrayFor(stmt);
         }
     }
 
@@ -628,10 +631,11 @@ pub const Compiler = struct {
         // Loop start
         const loop_start: u32 = @intCast(self.bytecode.items.len);
 
-        // Push loop context
+        // Push loop context (continue uses forward-patching → targets increment)
         self.loop_stack.append(self.allocator, .{
             .break_patches = .empty,
-            .continue_target = loop_start,
+            .continue_patches = .empty,
+            .continue_target = null, // patched to increment section below
         }) catch return error.OutOfMemory;
 
         // Condition: iter < end
@@ -642,6 +646,9 @@ pub const Compiler = struct {
 
         // Body
         for (stmt.body) |s| try self.compileNode(s);
+
+        // Increment section (continue target)
+        const continue_target: u32 = @intCast(self.bytecode.items.len);
 
         // Increment iterator: iter = iter + 1
         try self.emitWithU16(.load_local, iter_slot);
@@ -654,10 +661,83 @@ pub const Compiler = struct {
         try self.emitLoop(loop_start);
         self.patchJump(exit_jump);
 
-        // Patch break jumps
+        // Patch break and continue jumps
         var loop_ctx = self.loop_stack.pop().?;
         for (loop_ctx.break_patches.items) |bp| self.patchJump(bp);
         loop_ctx.break_patches.deinit(self.allocator);
+        for (loop_ctx.continue_patches.items) |cp| self.patchForwardJump(cp, continue_target);
+        loop_ctx.continue_patches.deinit(self.allocator);
+
+        self.endScope();
+    }
+
+    fn compileArrayFor(self: *Compiler, stmt: ast.ForStmt) !void {
+        self.beginScope();
+
+        // Evaluate iterable and store in hidden local
+        try self.compileExpr(stmt.iterable);
+        const arr_slot = try self.declareLocal("__for_arr__");
+        try self.emitWithU16(.store_local, arr_slot);
+
+        // Index counter = 0
+        const zero_const = try self.addConstant(.{ .int = 0 });
+        try self.emitWithU16(.push_const, zero_const);
+        const idx_slot = try self.declareLocal("__for_idx__");
+        try self.emitWithU16(.store_local, idx_slot);
+
+        // Declare the iterator variable (assigned each iteration)
+        try self.emit(.push_null);
+        const iter_slot = try self.declareLocal(stmt.iterator_name);
+        try self.emitWithU16(.store_local, iter_slot);
+
+        // Loop start
+        const loop_start: u32 = @intCast(self.bytecode.items.len);
+
+        // Push loop context (continue uses forward-patching → targets increment)
+        self.loop_stack.append(self.allocator, .{
+            .break_patches = .empty,
+            .continue_patches = .empty,
+            .continue_target = null, // patched to increment section below
+        }) catch return error.OutOfMemory;
+
+        // Condition: idx < arr.len()
+        try self.emitWithU16(.load_local, idx_slot);
+        try self.emitWithU16(.load_local, arr_slot);
+        const len_name = try self.addStringConstant("len");
+        try self.emitWithU16(.call_method, len_name);
+        self.bytecode.append(self.allocator, 0) catch return error.OutOfMemory; // 0 args
+        try self.emit(.lt);
+        const exit_jump = try self.emitJump(.jump_if_not);
+
+        // Load current element: item = arr[idx]
+        try self.emitWithU16(.load_local, arr_slot);
+        try self.emitWithU16(.load_local, idx_slot);
+        try self.emit(.load_index);
+        try self.emitWithU16(.store_local, iter_slot);
+
+        // Body
+        for (stmt.body) |s| try self.compileNode(s);
+
+        // Increment section (continue target)
+        const continue_target: u32 = @intCast(self.bytecode.items.len);
+
+        // idx = idx + 1
+        try self.emitWithU16(.load_local, idx_slot);
+        const one_const = try self.addConstant(.{ .int = 1 });
+        try self.emitWithU16(.push_const, one_const);
+        try self.emit(.add);
+        try self.emitWithU16(.store_local, idx_slot);
+
+        // Jump back to condition
+        try self.emitLoop(loop_start);
+        self.patchJump(exit_jump);
+
+        // Patch break and continue jumps
+        var loop_ctx = self.loop_stack.pop().?;
+        for (loop_ctx.break_patches.items) |bp| self.patchJump(bp);
+        loop_ctx.break_patches.deinit(self.allocator);
+        for (loop_ctx.continue_patches.items) |cp| self.patchForwardJump(cp, continue_target);
+        loop_ctx.continue_patches.deinit(self.allocator);
 
         self.endScope();
     }
@@ -669,7 +749,8 @@ pub const Compiler = struct {
 
         self.loop_stack.append(self.allocator, .{
             .break_patches = .empty,
-            .continue_target = loop_start,
+            .continue_patches = .empty,
+            .continue_target = loop_start, // while: continue goes to condition
         }) catch return error.OutOfMemory;
 
         try self.compileExpr(stmt.condition);
@@ -685,6 +766,7 @@ pub const Compiler = struct {
         var loop_ctx = self.loop_stack.pop().?;
         for (loop_ctx.break_patches.items) |bp| self.patchJump(bp);
         loop_ctx.break_patches.deinit(self.allocator);
+        loop_ctx.continue_patches.deinit(self.allocator);
     }
 
     fn compileReturnStmt(self: *Compiler, stmt: ast.ReturnStmt) !void {
@@ -719,7 +801,13 @@ pub const Compiler = struct {
             return;
         }
         const loop_ctx = &self.loop_stack.items[self.loop_stack.items.len - 1];
-        try self.emitLoop(loop_ctx.continue_target);
+        if (loop_ctx.continue_target) |target| {
+            try self.emitLoop(target);
+        } else {
+            // Forward-patch: target not yet known
+            const jump = try self.emitJump(.jump);
+            loop_ctx.continue_patches.append(self.allocator, jump) catch return error.OutOfMemory;
+        }
     }
 
     fn compileAssignStmt(self: *Compiler, stmt: ast.AssignStmt) !void {
@@ -1012,6 +1100,14 @@ pub const Compiler = struct {
         const current: i32 = @intCast(self.bytecode.items.len);
         const target: i32 = @intCast(patch_pos + 4); // offset is relative to after the operand
         const offset: i32 = current - target;
+        const bytes = std.mem.toBytes(std.mem.nativeToLittle(i32, offset));
+        @memcpy(self.bytecode.items[patch_pos..][0..4], &bytes);
+    }
+
+    fn patchForwardJump(self: *Compiler, patch_pos: u32, target_addr: u32) void {
+        const base: i32 = @intCast(patch_pos + 4);
+        const target: i32 = @intCast(target_addr);
+        const offset: i32 = target - base;
         const bytes = std.mem.toBytes(std.mem.nativeToLittle(i32, offset));
         @memcpy(self.bytecode.items[patch_pos..][0..4], &bytes);
     }

@@ -2056,3 +2056,136 @@ test "VM: higher-order function with closure" {
     , 3); // slot 0=apply, 1=make_multiplier, 2=times3, 3=result
     try std.testing.expectEqual(@as(i64, 21), val.int);
 }
+
+// ---- Phase 3.3: Loop enhancements ----
+
+test "VM: for-in array loop" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\let sum = 0
+        \\for item in arr {
+        \\  sum = sum + item
+        \\}
+        \\
+    , 1); // slot 0 = arr, slot 1 = sum
+    try std.testing.expectEqual(@as(i64, 60), val.int);
+}
+
+test "VM: for-in array with break" {
+    const val = try runAndGetLocal(
+        \\let arr = [1, 2, 3, 4, 5]
+        \\let sum = 0
+        \\for item in arr {
+        \\  if item == 4 {
+        \\    break
+        \\  }
+        \\  sum = sum + item
+        \\}
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 6), val.int);
+}
+
+test "VM: for-in array with continue" {
+    const val = try runAndGetLocal(
+        \\let arr = [1, 2, 3, 4, 5]
+        \\let sum = 0
+        \\for item in arr {
+        \\  if item == 3 {
+        \\    continue
+        \\  }
+        \\  sum = sum + item
+        \\}
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 12), val.int);
+}
+
+test "VM: for-in empty array" {
+    const val = try runAndGetLocal(
+        \\let arr = []
+        \\let count = 0
+        \\for item in arr {
+        \\  count = count + 1
+        \\}
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 0), val.int);
+}
+
+test "VM: nested for loops" {
+    const val = try runAndGetLocal(
+        \\let sum = 0
+        \\for i in 0..3 {
+        \\  for j in 0..3 {
+        \\    sum = sum + 1
+        \\  }
+        \\}
+        \\
+    , 0); // slot 0 = sum
+    try std.testing.expectEqual(@as(i64, 9), val.int);
+}
+
+test "VM: nested for-in with range" {
+    const val = try runAndGetLocal(
+        \\let arr = [10, 20, 30]
+        \\let sum = 0
+        \\for item in arr {
+        \\  for i in 0..item {
+        \\    sum = sum + 1
+        \\  }
+        \\}
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 60), val.int);
+}
+
+test "VM: nested for-in arrays" {
+    const val = try runAndGetLocal(
+        \\let a = [1, 2]
+        \\let b = [10, 20]
+        \\let sum = 0
+        \\for x in a {
+        \\  for y in b {
+        \\    sum = sum + x * y
+        \\  }
+        \\}
+        \\
+    , 2); // slot 0=a, 1=b, 2=sum
+    try std.testing.expectEqual(@as(i64, 90), val.int); // 1*10+1*20+2*10+2*20
+}
+
+test "VM: nested loop with break in inner" {
+    const val = try runAndGetLocal(
+        \\let sum = 0
+        \\for i in 0..3 {
+        \\  for j in 0..10 {
+        \\    if j == 2 {
+        \\      break
+        \\    }
+        \\    sum = sum + 1
+        \\  }
+        \\}
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 6), val.int); // 3 * 2
+}
+
+test "VM: while with break and continue" {
+    const val = try runAndGetLocal(
+        \\let sum = 0
+        \\let i = 0
+        \\while i < 10 {
+        \\  i = i + 1
+        \\  if i == 5 {
+        \\    continue
+        \\  }
+        \\  if i == 8 {
+        \\    break
+        \\  }
+        \\  sum = sum + i
+        \\}
+        \\
+    , 0); // slot 0 = sum
+    try std.testing.expectEqual(@as(i64, 23), val.int); // 1+2+3+4+6+7
+}
