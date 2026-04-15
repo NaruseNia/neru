@@ -28,6 +28,29 @@ pub const MapHandle = struct {
     }
 };
 
+/// Heap-allocated closure storage: a function reference + captured upvalues.
+pub const ClosureHandle = struct {
+    function_id: u16,
+    upvalues: []Value,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, function_id: u16, upvalue_count: u16) !*ClosureHandle {
+        const upvalues = try allocator.alloc(Value, upvalue_count);
+        @memset(upvalues, Value{ .null_val = {} });
+        const handle = try allocator.create(ClosureHandle);
+        handle.* = .{
+            .function_id = function_id,
+            .upvalues = upvalues,
+            .allocator = allocator,
+        };
+        return handle;
+    }
+
+    pub fn deinit(self: *ClosureHandle) void {
+        self.allocator.free(self.upvalues);
+    }
+};
+
 pub const Value = union(enum) {
     int: i64,
     float: f64,
@@ -35,6 +58,7 @@ pub const Value = union(enum) {
     bool_val: bool,
     null_val: void,
     function: u16, // function table index
+    closure: *ClosureHandle, // function + captured upvalues
     array: *ArrayHandle,
     map: *MapHandle,
 
@@ -45,7 +69,7 @@ pub const Value = union(enum) {
             .int => |i| i != 0,
             .float => |f| f != 0.0,
             .string => |s| s.len > 0,
-            .function => true,
+            .function, .closure => true,
             .array => true,
             .map => true,
         };
@@ -63,6 +87,7 @@ pub const Value = union(enum) {
             .bool_val => |a| a == other.bool_val,
             .null_val => true,
             .function => |a| a == other.function,
+            .closure => |a| a == other.closure,
             // Reference equality for arrays and maps
             .array => |a| a == other.array,
             .map => |a| a == other.map,
@@ -77,6 +102,7 @@ pub const Value = union(enum) {
             .bool_val => |b| try writer.print("{}", .{b}),
             .null_val => try writer.print("null", .{}),
             .function => |id| try writer.print("<fn:{d}>", .{id}),
+            .closure => |c| try writer.print("<closure:fn:{d}>", .{c.function_id}),
             .array => |arr| {
                 try writer.print("[", .{});
                 for (arr.items.items, 0..) |item, idx| {
@@ -107,7 +133,7 @@ pub const Value = union(enum) {
             .string => "string",
             .bool_val => "bool",
             .null_val => "null",
-            .function => "function",
+            .function, .closure => "function",
             .array => "array",
             .map => "map",
         };

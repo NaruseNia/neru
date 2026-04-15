@@ -25,6 +25,7 @@ pub const CallFrame = struct {
     return_ip: u32,
     base_pointer: u32,
     local_count: u16,
+    closure: ?*value_mod.ClosureHandle = null,
 };
 
 pub const VMError = error{
@@ -56,6 +57,10 @@ pub const VM = struct {
     allocated_strings: std.ArrayList([]u8) = .empty,
     allocated_arrays: std.ArrayList(*value_mod.ArrayHandle) = .empty,
     allocated_maps: std.ArrayList(*value_mod.MapHandle) = .empty,
+    allocated_closures: std.ArrayList(*value_mod.ClosureHandle) = .empty,
+
+    // Active closure for upvalue access (set when executing inside a closure)
+    active_closure: ?*value_mod.ClosureHandle = null,
 
     // Event system state
     suspended: bool = false,
@@ -98,6 +103,11 @@ pub const VM = struct {
             self.allocator.destroy(a);
         }
         self.allocated_arrays.deinit(self.allocator);
+        for (self.allocated_closures.items) |c| {
+            c.deinit();
+            self.allocator.destroy(c);
+        }
+        self.allocated_closures.deinit(self.allocator);
         self.event_arena.deinit();
     }
 
@@ -275,14 +285,16 @@ pub const VM = struct {
 
                     if (argc != func.arity) return error.ArityMismatch;
 
-                    // Push call frame
+                    // Push call frame (save current closure)
                     const frame = CallFrame{
                         .function_id = func_id,
                         .return_ip = self.ip,
                         .base_pointer = @intCast(self.stack.top - argc),
                         .local_count = func.local_count,
+                        .closure = self.active_closure,
                     };
                     self.call_stack.push(frame) catch return error.StackOverflow;
+                    self.active_closure = null;
 
                     // Reserve space for locals beyond params
                     const extra_locals = func.local_count -| argc;
@@ -292,6 +304,122 @@ pub const VM = struct {
                     }
 
                     self.ip = func.bytecode_offset;
+                },
+                .call_value => {
+                    const argc = self.bytecode[self.ip];
+                    self.ip += 1;
+
+                    // The function value is below the arguments on the stack
+                    const func_val = self.stack.items[self.stack.top - argc - 1];
+
+                    const func_id: u16 = switch (func_val) {
+                        .function => |fid| fid,
+                        .closure => |c| c.function_id,
+                        else => return error.TypeError,
+                    };
+
+                    if (func_id >= self.functions.len) return error.InvalidFunction;
+                    const func = self.functions[func_id];
+
+                    if (argc != func.arity) return error.ArityMismatch;
+
+                    // Move arguments down over the function value slot
+                    // Stack before: [..., func_val, arg0, arg1, ...]
+                    // Stack after:  [..., arg0, arg1, ...]
+                    const args_start = self.stack.top - argc;
+                    const func_slot = args_start - 1;
+                    var j: usize = 0;
+                    while (j < argc) : (j += 1) {
+                        self.stack.items[func_slot + j] = self.stack.items[args_start + j];
+                    }
+                    self.stack.top -= 1; // one fewer slot (removed func_val)
+
+                    // Push call frame
+                    const frame = CallFrame{
+                        .function_id = func_id,
+                        .return_ip = self.ip,
+                        .base_pointer = @intCast(self.stack.top - argc),
+                        .local_count = func.local_count,
+                        .closure = self.active_closure,
+                    };
+                    self.call_stack.push(frame) catch return error.StackOverflow;
+
+                    // Set active closure if calling a closure
+                    self.active_closure = switch (func_val) {
+                        .closure => |c| c,
+                        else => null,
+                    };
+
+                    // Reserve space for locals beyond params
+                    const extra_locals = func.local_count -| argc;
+                    var i: u16 = 0;
+                    while (i < extra_locals) : (i += 1) {
+                        self.stack.push(.{ .null_val = {} }) catch return error.StackOverflow;
+                    }
+
+                    self.ip = func.bytecode_offset;
+                },
+                .push_function => {
+                    const func_id = self.readU16();
+                    try self.push(.{ .function = func_id });
+                },
+                .make_closure => {
+                    const func_id = self.readU16();
+                    const upvalue_count = self.readU16();
+
+                    const closure = value_mod.ClosureHandle.init(self.allocator, func_id, upvalue_count) catch return error.RuntimeError;
+                    self.allocated_closures.append(self.allocator, closure) catch return error.RuntimeError;
+
+                    // Read upvalue descriptors and capture values
+                    var i: u16 = 0;
+                    while (i < upvalue_count) : (i += 1) {
+                        const is_local = self.bytecode[self.ip] == 1;
+                        self.ip += 1;
+                        const index = self.readU16();
+
+                        if (is_local) {
+                            // Capture from current frame's locals
+                            const base = if (self.call_stack.top > 0)
+                                self.call_stack.items[self.call_stack.top - 1].base_pointer
+                            else
+                                0;
+                            closure.upvalues[i] = self.stack.get(base + index);
+                        } else {
+                            // Capture from current closure's upvalues
+                            if (self.active_closure) |ac| {
+                                closure.upvalues[i] = ac.upvalues[index];
+                            } else {
+                                closure.upvalues[i] = .{ .null_val = {} };
+                            }
+                        }
+                    }
+
+                    try self.push(.{ .closure = closure });
+                },
+                .load_upvalue => {
+                    const index = self.readU16();
+                    if (self.active_closure) |c| {
+                        if (index < c.upvalues.len) {
+                            try self.push(c.upvalues[index]);
+                        } else {
+                            return error.RuntimeError;
+                        }
+                    } else {
+                        return error.RuntimeError;
+                    }
+                },
+                .store_upvalue => {
+                    const index = self.readU16();
+                    const val = try self.pop();
+                    if (self.active_closure) |c| {
+                        if (index < c.upvalues.len) {
+                            c.upvalues[index] = val;
+                        } else {
+                            return error.RuntimeError;
+                        }
+                    } else {
+                        return error.RuntimeError;
+                    }
                 },
                 .ret => {
                     const return_val = self.pop() catch Value{ .null_val = {} };
@@ -304,6 +432,9 @@ pub const VM = struct {
                     }
 
                     const frame = self.call_stack.pop() catch return error.RuntimeError;
+
+                    // Restore caller's closure context
+                    self.active_closure = frame.closure;
 
                     // Pop locals + args
                     self.stack.top = frame.base_pointer;
@@ -651,6 +782,7 @@ pub const VM = struct {
             .bool_val => |b| self.allocator.dupe(u8, if (b) "true" else "false") catch return error.RuntimeError,
             .null_val => self.allocator.dupe(u8, "null") catch return error.RuntimeError,
             .function => |id| std.fmt.allocPrint(self.allocator, "<fn:{d}>", .{id}) catch return error.RuntimeError,
+            .closure => |c| std.fmt.allocPrint(self.allocator, "<closure:fn:{d}>", .{c.function_id}) catch return error.RuntimeError,
             .array, .map => blk: {
                 var buf: std.ArrayListUnmanaged(u8) = .empty;
                 v.formatValue(buf.writer(self.allocator)) catch {
@@ -1791,4 +1923,136 @@ test "VM: map missing key returns null" {
         \\
     , 1);
     try std.testing.expect(val == .null_val);
+}
+
+// ---- Phase 3.2: First-class functions & closures ----
+
+test "VM: function assigned to variable" {
+    const val = try runAndGetLocal(
+        \\fn double(n) {
+        \\  return n * 2
+        \\}
+        \\let f = double
+        \\let result = f(21)
+        \\
+    , 2); // slot 0 = double, slot 1 = f, slot 2 = result
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: function passed as argument" {
+    const val = try runAndGetLocal(
+        \\fn apply(func, x) {
+        \\  return func(x)
+        \\}
+        \\fn triple(n) {
+        \\  return n * 3
+        \\}
+        \\let result = apply(triple, 10)
+        \\
+    , 2); // slot 0 = apply, slot 1 = triple, slot 2 = result
+    try std.testing.expectEqual(@as(i64, 30), val.int);
+}
+
+test "VM: function returned from function" {
+    const val = try runAndGetLocal(
+        \\fn get_doubler() {
+        \\  fn doubler(n) {
+        \\    return n * 2
+        \\  }
+        \\  return doubler
+        \\}
+        \\let f = get_doubler()
+        \\let result = f(15)
+        \\
+    , 2); // slot 0 = get_doubler, slot 1 = f, slot 2 = result
+    try std.testing.expectEqual(@as(i64, 30), val.int);
+}
+
+test "VM: function value is truthy" {
+    const val = try runAndGetLocal(
+        \\fn noop() { return null }
+        \\let result = false
+        \\if noop {
+        \\  result = true
+        \\}
+        \\
+    , 1); // slot 0 = noop, slot 1 = result
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: function value equality" {
+    const val = try runAndGetLocal(
+        \\fn foo() { return 1 }
+        \\let a = foo
+        \\let b = foo
+        \\let same = a == b
+        \\
+    , 3); // slot 0 = foo, 1 = a, 2 = b, 3 = same
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: closure captures variable" {
+    const val = try runAndGetLocal(
+        \\fn make_adder(x) {
+        \\  fn adder(y) {
+        \\    return x + y
+        \\  }
+        \\  return adder
+        \\}
+        \\let add5 = make_adder(5)
+        \\let result = add5(10)
+        \\
+    , 2); // slot 0 = make_adder, slot 1 = add5, slot 2 = result
+    try std.testing.expectEqual(@as(i64, 15), val.int);
+}
+
+test "VM: closure captures multiple variables" {
+    const val = try runAndGetLocal(
+        \\fn make_calc(a, b) {
+        \\  fn calc(c) {
+        \\    return a + b + c
+        \\  }
+        \\  return calc
+        \\}
+        \\let f = make_calc(10, 20)
+        \\let result = f(30)
+        \\
+    , 2); // slot 0 = make_calc, slot 1 = f, slot 2 = result
+    try std.testing.expectEqual(@as(i64, 60), val.int);
+}
+
+test "VM: multiple closures from same factory" {
+    const val = try runAndGetLocal(
+        \\fn make_adder(x) {
+        \\  fn adder(y) {
+        \\    return x + y
+        \\  }
+        \\  return adder
+        \\}
+        \\let add3 = make_adder(3)
+        \\let add7 = make_adder(7)
+        \\let r1 = add3(10)
+        \\let r2 = add7(10)
+        \\let result = r1 + r2
+        \\
+    , 5); // slot 0=make_adder, 1=add3, 2=add7, 3=r1, 4=r2, 5=result
+    try std.testing.expectEqual(@as(i64, 30), val.int); // 13 + 17
+}
+
+test "VM: higher-order function with closure" {
+    const val = try runAndGetLocal(
+        \\fn apply(func, x) {
+        \\  return func(x)
+        \\}
+        \\fn make_multiplier(factor) {
+        \\  fn mul(n) {
+        \\    return n * factor
+        \\  }
+        \\  return mul
+        \\}
+        \\let times3 = make_multiplier(3)
+        \\let result = apply(times3, 7)
+        \\
+    , 3); // slot 0=apply, 1=make_multiplier, 2=times3, 3=result
+    try std.testing.expectEqual(@as(i64, 21), val.int);
 }

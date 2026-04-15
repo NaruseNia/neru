@@ -161,6 +161,12 @@ pub const CompiledModule = struct {
 const Local = struct {
     name: []const u8,
     depth: u16,
+    is_captured: bool = false,
+};
+
+const Upvalue = struct {
+    index: u16, // local slot in enclosing function
+    is_local: bool, // true = captures a local; false = captures an upvalue from parent
 };
 
 const LabelPatch = struct {
@@ -191,6 +197,13 @@ pub const Compiler = struct {
 
     // For function compilation
     current_func_local_start: u32,
+
+    // Upvalue tracking for closures
+    upvalues: std.ArrayList(Upvalue) = .empty,
+    // Stack of parent compiler states for resolving upvalues across nesting
+    parent_locals: ?*std.ArrayList(Local) = null,
+    parent_local_start: u32 = 0,
+    parent_upvalues: ?*std.ArrayList(Upvalue) = null,
 
     // Compile-time speaker tracking for scenario text lines. Updated by
     // @speaker directives and pushed as the speaker operand of emit_text.
@@ -227,6 +240,7 @@ pub const Compiler = struct {
         self.functions.deinit(self.allocator);
         self.debug_lines.deinit(self.allocator);
         self.locals.deinit(self.allocator);
+        self.upvalues.deinit(self.allocator);
         for (self.loop_stack.items) |*l| l.break_patches.deinit(self.allocator);
         self.loop_stack.deinit(self.allocator);
         self.labels.deinit(self.allocator);
@@ -485,10 +499,20 @@ pub const Compiler = struct {
         const saved_local_count = self.locals.items.len;
         const saved_depth = self.scope_depth;
         const saved_max_locals = self.max_locals;
+        const saved_upvalues = self.upvalues;
+        const saved_parent_locals = self.parent_locals;
+        const saved_parent_local_start = self.parent_local_start;
+        const saved_parent_upvalues = self.parent_upvalues;
+
+        // Set up parent references for upvalue resolution
+        self.parent_locals = &self.locals;
+        self.parent_local_start = self.current_func_local_start;
+        self.parent_upvalues = &self.upvalues;
 
         self.current_func_local_start = @intCast(self.locals.items.len);
         self.scope_depth = 0;
         self.max_locals = 0;
+        self.upvalues = .empty;
 
         // Declare parameters as locals
         for (decl.params) |param| {
@@ -508,17 +532,27 @@ pub const Compiler = struct {
         // Patch function local count
         self.functions.items[func_id].local_count = @intCast(self.max_locals);
 
+        // Capture upvalue list before restoring state
+        const fn_upvalues = self.upvalues;
+
         // Restore compiler state
         self.locals.shrinkRetainingCapacity(saved_local_count);
         self.current_func_local_start = saved_local_start;
         self.scope_depth = saved_depth;
         self.max_locals = saved_max_locals;
+        self.upvalues = saved_upvalues;
+        self.parent_locals = saved_parent_locals;
+        self.parent_local_start = saved_parent_local_start;
+        self.parent_upvalues = saved_parent_upvalues;
 
         self.patchJump(jump_over);
 
-        // Store function reference as a local
-        const func_const = try self.addConstant(.{ .int = @intCast(func_id) });
-        try self.emitWithU16(.push_const, func_const);
+        // Emit closure or plain function depending on whether upvalues were captured
+        if (fn_upvalues.items.len > 0) {
+            try self.emitMakeClosure(func_id, fn_upvalues.items);
+        } else {
+            try self.emitWithU16(.push_function, func_id);
+        }
         const slot = try self.declareLocal(decl.name);
         try self.emitWithU16(.store_local, slot);
     }
@@ -714,6 +748,8 @@ pub const Compiler = struct {
             .identifier_expr => |id| {
                 if (self.resolveLocal(id.name)) |slot| {
                     try self.emitWithU16(.store_local, slot);
+                } else if (self.resolveUpvalue(id.name)) |uv_idx| {
+                    try self.emitWithU16(.store_upvalue, uv_idx);
                 } else {
                     self.diagnostics.addError(.codegen, stmt.span, "undefined variable");
                 }
@@ -788,6 +824,8 @@ pub const Compiler = struct {
     fn compileIdentifier(self: *Compiler, id: ast.IdentifierExpr) !void {
         if (self.resolveLocal(id.name)) |slot| {
             try self.emitWithU16(.load_local, slot);
+        } else if (self.resolveUpvalue(id.name)) |uv_idx| {
+            try self.emitWithU16(.load_upvalue, uv_idx);
         } else {
             self.diagnostics.addError(.codegen, id.span, "undefined variable");
         }
@@ -861,31 +899,48 @@ pub const Compiler = struct {
             return;
         }
 
-        if (callee != .identifier_expr) {
-            self.diagnostics.addError(.codegen, expr.span, "callee must be an identifier");
+        // Try static function table lookup for direct identifier calls
+        if (callee == .identifier_expr) {
+            const name = callee.identifier_expr.name;
+
+            // Search function table for the name (static call)
+            var func_id: ?u16 = null;
+            for (self.functions.items, 0..) |f, i| {
+                const fname = self.constants.items[f.name_idx].string;
+                if (std.mem.eql(u8, fname, name)) {
+                    func_id = @intCast(i);
+                }
+            }
+
+            if (func_id) |fid| {
+                // Push arguments
+                for (expr.args) |arg| {
+                    try self.compileExpr(arg);
+                }
+                try self.emitCall(fid, @intCast(expr.args.len));
+                return;
+            }
+
+            // Not in function table — try as a local variable holding a function value
+            if (self.resolveLocal(name) != null) {
+                try self.compileExpr(expr.callee); // pushes function value
+                for (expr.args) |arg| {
+                    try self.compileExpr(arg);
+                }
+                try self.emitCallValue(@intCast(expr.args.len));
+                return;
+            }
+
+            self.diagnostics.addError(.codegen, expr.span, "undefined function or variable");
             return;
         }
 
-        // Push arguments
+        // Arbitrary expression as callee (e.g., arr[0](), get_fn()())
+        try self.compileExpr(expr.callee);
         for (expr.args) |arg| {
             try self.compileExpr(arg);
         }
-
-        // Search function table for the name
-        const name = callee.identifier_expr.name;
-        var func_id: ?u16 = null;
-        for (self.functions.items, 0..) |f, i| {
-            const fname = self.constants.items[f.name_idx].string;
-            if (std.mem.eql(u8, fname, name)) {
-                func_id = @intCast(i);
-            }
-        }
-
-        if (func_id) |fid| {
-            try self.emitCall(fid, @intCast(expr.args.len));
-        } else {
-            self.diagnostics.addError(.codegen, expr.span, "undefined function");
-        }
+        try self.emitCallValue(@intCast(expr.args.len));
     }
 
     fn compileIndex(self: *Compiler, expr: ast.IndexExpr) !void {
@@ -937,6 +992,11 @@ pub const Compiler = struct {
         try self.emit(.call);
         const id_bytes = std.mem.toBytes(std.mem.nativeToLittle(u16, func_id));
         self.bytecode.appendSlice(self.allocator, &id_bytes) catch return error.OutOfMemory;
+        self.bytecode.append(self.allocator, argc) catch return error.OutOfMemory;
+    }
+
+    fn emitCallValue(self: *Compiler, argc: u8) !void {
+        try self.emit(.call_value);
         self.bytecode.append(self.allocator, argc) catch return error.OutOfMemory;
     }
 
@@ -1090,6 +1150,51 @@ pub const Compiler = struct {
             }
         }
         return null;
+    }
+
+    fn resolveUpvalue(self: *Compiler, name: []const u8) ?u16 {
+        const pl = self.parent_locals orelse return null;
+
+        // Try to capture from the immediately enclosing function's locals
+        var i: usize = pl.items.len;
+        while (i > self.parent_local_start) {
+            i -= 1;
+            if (std.mem.eql(u8, pl.items[i].name, name)) {
+                pl.items[i].is_captured = true;
+                return self.addUpvalue(@intCast(i - self.parent_local_start), true);
+            }
+        }
+
+        return null;
+    }
+
+    fn addUpvalue(self: *Compiler, index: u16, is_local: bool) ?u16 {
+        // Check for duplicate
+        for (self.upvalues.items, 0..) |uv, i| {
+            if (uv.index == index and uv.is_local == is_local) {
+                return @intCast(i);
+            }
+        }
+        self.upvalues.append(self.allocator, .{
+            .index = index,
+            .is_local = is_local,
+        }) catch return null;
+        return @intCast(self.upvalues.items.len - 1);
+    }
+
+    fn emitMakeClosure(self: *Compiler, func_id: u16, upvalue_list: []const Upvalue) !void {
+        try self.emit(.make_closure);
+        const fid_bytes = std.mem.toBytes(std.mem.nativeToLittle(u16, func_id));
+        self.bytecode.appendSlice(self.allocator, &fid_bytes) catch return error.OutOfMemory;
+        const uv_count: u16 = @intCast(upvalue_list.len);
+        const uv_bytes = std.mem.toBytes(std.mem.nativeToLittle(u16, uv_count));
+        self.bytecode.appendSlice(self.allocator, &uv_bytes) catch return error.OutOfMemory;
+        // Each upvalue: [is_local: u8][index: u16]
+        for (upvalue_list) |uv| {
+            self.bytecode.append(self.allocator, if (uv.is_local) @as(u8, 1) else @as(u8, 0)) catch return error.OutOfMemory;
+            const idx_bytes = std.mem.toBytes(std.mem.nativeToLittle(u16, uv.index));
+            self.bytecode.appendSlice(self.allocator, &idx_bytes) catch return error.OutOfMemory;
+        }
     }
 
     // ---- Debug info ----

@@ -306,6 +306,57 @@ fn calculate_damage(base, defense) {
 }
 ```
 
+#### 4.5.1 ファーストクラス関数
+
+関数は値として扱える。変数への代入、引数としての受け渡し、関数からの返却が可能。
+
+```
+fn double(n) { return n * 2 }
+
+let f = double       // 変数に代入
+let result = f(21)   // 変数経由で呼び出し
+
+fn apply(func, x) {  // 引数として受け取り
+  return func(x)
+}
+apply(double, 5)     // 関数を渡す
+```
+
+#### 4.5.2 クロージャ
+
+関数は定義時のスコープの変数をキャプチャできる。
+
+```
+fn make_adder(x) {
+  fn adder(y) {
+    return x + y    // 外側スコープの x をキャプチャ
+  }
+  return adder
+}
+
+let add5 = make_adder(5)
+add5(10)  // => 15
+```
+
+#### 4.5.3 可変長引数（将来拡張）
+
+将来的に `...` 構文で可変長引数をサポート予定。設計方針:
+
+```
+fn log(level, ...messages) {
+  for msg in messages {
+    debug.log(level + ": " + msg)
+  }
+}
+
+log("INFO", "start", "processing")
+```
+
+- `...param` は最後の仮引数にのみ使用可能
+- `param` は配列として関数本体内でアクセスされる
+- 通常の引数と混在可能（可変長部分は末尾に限定）
+- スプレッド演算子 `...arr` で配列を展開して渡すことも検討
+
 ### 4.6 配列操作
 
 ```
