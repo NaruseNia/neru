@@ -195,9 +195,9 @@ docs/
 
 ### 3.4 文字列操作
 
-- [ ] 文字列メソッド（len, upper, lower, contains, replace, split, trim）
-- [ ] 文字列結合（`+` 演算子）
-- [ ] 文字列比較
+- [x] 文字列メソッド（len, upper, lower, contains, replace, split, trim）
+- [x] 文字列結合（`+` 演算子）
+- [x] 文字列比較
 
 ### 3.5 組み込み関数
 
