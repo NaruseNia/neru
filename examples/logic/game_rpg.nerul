@@ -1,0 +1,112 @@
+// Mini RPG system — combines Phase 3 features
+//
+// Demonstrates: arrays, maps, closures, for-in, string ops, builtins
+
+// --- Character creation ---
+fn create_char(name, hp, atk, def) {
+  return {
+    "name": name,
+    "hp": hp,
+    "max_hp": hp,
+    "atk": atk,
+    "def": def,
+    "alive": true
+  }
+}
+
+// --- Combat ---
+fn calc_damage(attacker, defender) {
+  let raw = attacker["atk"] - defender["def"]
+  let base = math.max(raw, 1)
+  let variance = math.random(-2, 2)
+  return math.max(base + variance, 0)
+}
+
+fn attack(attacker, defender) {
+  let dmg = calc_damage(attacker, defender)
+  defender["hp"] = defender["hp"] - dmg
+  if defender["hp"] <= 0 {
+    defender["hp"] = 0
+    defender["alive"] = false
+  }
+  return dmg
+}
+
+// --- Inventory ---
+fn create_inventory() {
+  return []
+}
+
+fn add_item(inv, item_name) {
+  if !inv.contains(item_name) {
+    inv.push(item_name)
+  }
+}
+
+fn has_item(inv, item_name) {
+  return inv.contains(item_name)
+}
+
+// --- Party utilities ---
+fn party_alive_count(party) {
+  let count = 0
+  for member in party {
+    if member["alive"] {
+      count = count + 1
+    }
+  }
+  return count
+}
+
+fn find_weakest(party) {
+  let weakest_hp = 99999
+  let weakest_idx = 0
+  for i in 0..party.len() {
+    if party[i]["alive"] {
+      if party[i]["hp"] < weakest_hp {
+        weakest_hp = party[i]["hp"]
+        weakest_idx = i
+      }
+    }
+  }
+  return weakest_idx
+}
+
+// --- Run a battle ---
+let hero = create_char("Hero", 100, 25, 10)
+let enemy = create_char("Goblin", 40, 15, 5)
+
+let turn = 0
+while hero["alive"] && enemy["alive"] {
+  turn = turn + 1
+
+  let hero_dmg = attack(hero, enemy)
+  if !enemy["alive"] { break }
+
+  let enemy_dmg = attack(enemy, hero)
+}
+
+debug.log("Battle ended at turn:")
+debug.log(turn)
+debug.log("Hero HP:")
+debug.log(hero["hp"])
+debug.log("Enemy HP:")
+debug.log(enemy["hp"])
+
+if hero["alive"] {
+  debug.log("Hero wins!")
+} else {
+  debug.log("Hero defeated...")
+}
+
+// --- Inventory demo ---
+let inv = create_inventory()
+add_item(inv, "sword")
+add_item(inv, "shield")
+add_item(inv, "potion")
+add_item(inv, "sword")  // duplicate, ignored
+
+debug.assert(inv.len() == 3, "inventory should have 3 items")
+debug.assert(has_item(inv, "shield"), "should have shield")
+debug.log("inventory:")
+debug.dump(inv)

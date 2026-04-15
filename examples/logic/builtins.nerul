@@ -1,0 +1,39 @@
+// Built-in math and debug modules
+
+// --- math ---
+let abs_val = math.abs(-42)     // 42
+let abs_f = math.abs(-3.14)    // 3.14
+
+let smaller = math.min(10, 3)  // 3
+let bigger = math.max(10, 3)   // 10
+
+let floored = math.floor(3.7)  // 3
+let ceiled = math.ceil(3.2)    // 4
+
+// Random damage with variance
+fn roll_damage(base) {
+  let variance = math.random(-5, 5)
+  return math.max(base + variance, 0)
+}
+
+let dmg = roll_damage(20)
+
+// --- debug ---
+debug.log("=== builtins example ===")
+debug.log(abs_val)
+debug.dump([1, 2, 3])
+
+// Assert for validation
+debug.assert(abs_val == 42, "abs(-42) should be 42")
+debug.assert(smaller == 3)
+debug.assert(floored == 3)
+
+// --- Practical: clamp ---
+fn clamp(value, lo, hi) {
+  return math.min(math.max(value, lo), hi)
+}
+
+let clamped = clamp(150, 0, 100)  // 100
+debug.assert(clamped == 100, "clamp failed")
+
+debug.log("all assertions passed")

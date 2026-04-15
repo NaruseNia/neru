@@ -1,0 +1,27 @@
+// Reusable math utilities — importable library
+
+fn clamp(value, lo, hi) {
+  return math.min(math.max(value, lo), hi)
+}
+
+fn lerp(a, b, t) {
+  return a + (b - a) * t
+}
+
+fn sum(arr) {
+  let total = 0
+  for item in arr {
+    total = total + item
+  }
+  return total
+}
+
+fn average(arr) {
+  if arr.len() == 0 { return 0 }
+  return sum(arr) / arr.len()
+}
+
+// Private helper — not importable
+fn _validate_range(lo, hi) {
+  return lo <= hi
+}

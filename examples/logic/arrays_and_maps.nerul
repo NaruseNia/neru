@@ -1,0 +1,47 @@
+// Arrays and maps — basic data structure operations
+
+// --- Arrays ---
+let inventory = ["sword", "shield"]
+inventory.push("potion")
+inventory.push("key")
+
+// Iteration
+let total = 0
+for item in inventory {
+  total += 1
+}
+// total = 4
+
+// Contains check
+let has_sword = inventory.contains("sword")   // true
+let has_bow = inventory.contains("bow")       // false
+
+// Pop last element
+let last = inventory.pop()  // "key"
+// inventory = ["sword", "shield", "potion"]
+
+// --- Maps ---
+let hero = {"name": "Taro", "hp": 100, "mp": 50}
+hero["level"] = 1
+hero["exp"] = 0
+
+let keys = hero.keys()
+// keys = ["name", "hp", "mp", "level", "exp"]
+
+let has_hp = hero.has("hp")     // true
+hero.remove("exp")
+
+// --- Nested ---
+let party = [
+  {"name": "Taro", "hp": 100},
+  {"name": "Hana", "hp": 80},
+  {"name": "Sora", "hp": 120}
+]
+
+let strongest_hp = 0
+for member in party {
+  if member["hp"] > strongest_hp {
+    strongest_hp = member["hp"]
+  }
+}
+// strongest_hp = 120

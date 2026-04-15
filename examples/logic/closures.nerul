@@ -1,0 +1,52 @@
+// Closures and first-class functions
+
+// --- First-class: assign to variable ---
+fn double(n) { return n * 2 }
+let f = double
+let r1 = f(21)  // 42
+
+// --- Pass as argument ---
+fn apply(func, x) { return func(x) }
+let r2 = apply(double, 10)  // 20
+
+// --- Closure: capture enclosing variable ---
+fn make_adder(x) {
+  fn adder(y) { return x + y }
+  return adder
+}
+
+let add5 = make_adder(5)
+let add10 = make_adder(10)
+let r3 = add5(3)    // 8
+let r4 = add10(3)   // 13
+
+// --- Practical: transform an array ---
+fn make_multiplier(factor) {
+  fn mul(n) { return n * factor }
+  return mul
+}
+
+fn transform(arr, func) {
+  let result = []
+  for item in arr {
+    result.push(func(item))
+  }
+  return result
+}
+
+let numbers = [1, 2, 3, 4, 5]
+let tripled = transform(numbers, make_multiplier(3))
+// tripled = [3, 6, 9, 12, 15]
+
+// --- Practical: filter ---
+fn filter(arr, pred) {
+  let result = []
+  for item in arr {
+    if pred(item) { result.push(item) }
+  }
+  return result
+}
+
+fn is_even(n) { return n % 2 == 0 }
+let evens = filter(numbers, is_even)
+// evens = [2, 4]

@@ -1,0 +1,23 @@
+// Module system demo — importing functions from another file
+//
+// Run from project root:
+//   neru run examples/logic/modules/main.nerul
+
+@import * from "examples/logic/modules/math_lib.nerul"
+
+let scores = [85, 92, 78, 95, 88]
+
+let total = sum(scores)
+let avg = average(scores)
+
+let clamped = clamp(150, 0, 100)
+
+debug.log("total:")
+debug.log(total)
+debug.log("average:")
+debug.log(avg)
+debug.log("clamped 150 to [0,100]:")
+debug.log(clamped)
+
+debug.assert(total == 438, "sum check")
+debug.assert(clamped == 100, "clamp check")

@@ -25,16 +25,27 @@ text/wait are acknowledged immediately) and prints each event to stdout.
 
 ## Logic (.nerul)
 
+### Basics
+
 | File | What it shows |
 | --- | --- |
 | [logic/fibonacci.nerul](logic/fibonacci.nerul) | Recursive function, `if`, `return` |
 | [logic/loops.nerul](logic/loops.nerul) | `for`, `while`, `break`, `continue` |
 | [logic/variables.nerul](logic/variables.nerul) | `let`, compound assignments, scoping |
 
-## What's not in Phase 2
+### Phase 3 Features
 
-- Arrays, maps, and string methods (Phase 3)
+| File | What it shows |
+| --- | --- |
+| [logic/arrays_and_maps.nerul](logic/arrays_and_maps.nerul) | Array/map creation, methods, iteration, nesting |
+| [logic/closures.nerul](logic/closures.nerul) | First-class functions, closures, transform/filter patterns |
+| [logic/strings.nerul](logic/strings.nerul) | String methods, concatenation, comparison, split |
+| [logic/builtins.nerul](logic/builtins.nerul) | `math.*` and `debug.*` built-in modules |
+| [logic/modules/main.nerul](logic/modules/main.nerul) | `@import` module system with [math_lib.nerul](logic/modules/math_lib.nerul) |
+| [logic/game_rpg.nerul](logic/game_rpg.nerul) | Mini RPG: combat, inventory, maps, closures combined |
+
+## What's not yet available
+
 - `state` / save / load (Phase 4)
 - Macros, i18n (Phase 4)
-- Cross-file `@jump` (Phase 3 modules)
-- Interpolation referencing state variables (requires Phase 4)
+- Cross-file `@jump` execution (Phase 3.6 parsed but runtime halts)

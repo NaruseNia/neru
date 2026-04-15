@@ -1,0 +1,42 @@
+// String operations
+
+let greeting = "Hello" + ", " + "World!"
+let length = greeting.len()  // 13
+
+// Case conversion
+let upper = "hello".upper()  // "HELLO"
+let lower = "HELLO".lower()  // "hello"
+
+// Search
+let has_world = greeting.contains("World")  // true
+
+// Replace
+let fixed = "Hello Wold".replace("Wold", "World")
+// fixed = "Hello World"
+
+// Split and iterate
+let csv = "apple,banana,cherry,date"
+let fruits = csv.split(",")
+
+let count = 0
+for fruit in fruits {
+  count += 1
+}
+// count = 4
+
+// Trim whitespace
+let messy = "  clean me up  "
+let clean = messy.trim()  // "clean me up"
+
+// Comparison (lexicographic)
+let a_first = "apple" < "banana"  // true
+let same = "neru" == "neru"       // true
+
+// Build a sentence from parts
+let words = ["the", "quick", "brown", "fox"]
+let sentence = ""
+for i in 0..words.len() {
+  if i > 0 { sentence = sentence + " " }
+  sentence = sentence + words[i]
+}
+// sentence = "the quick brown fox"
