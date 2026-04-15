@@ -201,9 +201,9 @@ docs/
 
 ### 3.5 組み込み関数
 
-- [ ] `math.abs`, `math.min`, `math.max`, `math.random`, `math.floor`, `math.ceil`
-- [ ] `debug.log`, `debug.dump`, `debug.assert`
-- [ ] 型変換関数（将来拡張含む）
+- [x] `math.abs`, `math.min`, `math.max`, `math.random`, `math.floor`, `math.ceil`
+- [x] `debug.log`, `debug.dump`, `debug.assert`
+- [x] 型変換関数（将来拡張含む）
 
 ### 3.6 モジュールシステム
 
