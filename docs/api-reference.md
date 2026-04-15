@@ -106,6 +106,12 @@ for i in 0..10 {
   // i = 0, 1, 2, ..., 9
 }
 
+// 配列 for-in
+let items = ["a", "b", "c"]
+for item in items {
+  debug.log(item)
+}
+
 // while
 while condition {
   // ...
@@ -134,6 +140,90 @@ fn factorial(n) {
   return n * factorial(n - 1)
 }
 ```
+
+### ファーストクラス関数・クロージャ
+
+```
+// 変数に代入
+let f = add
+f(10, 20)   // 30
+
+// 関数を引数に渡す
+fn apply(func, x) { return func(x) }
+
+// クロージャ
+fn make_adder(x) {
+  fn adder(y) { return x + y }
+  return adder
+}
+let add5 = make_adder(5)
+add5(10)   // 15
+```
+
+### データ構造
+
+```
+// 配列
+let arr = [1, 2, 3]
+arr.push(4)           // 末尾追加
+arr.pop()             // 末尾削除
+arr.len()             // 長さ
+arr.contains(2)       // 含有判定
+arr[0]                // インデックスアクセス
+
+// マップ
+let m = {"hp": 100, "mp": 50}
+m["str"] = 30         // キー追加
+m.remove("mp")        // キー削除
+m.keys()              // キー一覧
+m.has("hp")           // キー存在判定
+m.len()               // エントリ数
+```
+
+### 文字列操作
+
+```
+let s = "Hello World"
+s.len()                          // 11
+s.upper()                        // "HELLO WORLD"
+s.lower()                        // "hello world"
+s.contains("World")              // true
+s.replace("World", "Zig")        // "Hello Zig"
+s.split(" ")                     // ["Hello", "World"]
+"  hello  ".trim()               // "hello"
+"abc" + "def"                    // "abcdef" (結合)
+"abc" < "abd"                    // true (辞書順比較)
+```
+
+### 組み込みモジュール
+
+```
+// math
+math.abs(-42)          // 42
+math.min(3, 7)         // 3
+math.max(3, 7)         // 7
+math.floor(3.7)        // 3
+math.ceil(3.2)         // 4
+math.random(1, 10)     // 1〜10 のランダム整数
+
+// debug
+debug.log("message")   // stderr にログ出力
+debug.dump(value)       // 型情報付きダンプ
+debug.assert(cond)      // false なら RuntimeError
+debug.assert(cond, "msg")
+```
+
+### モジュールシステム
+
+```
+// 名前付きインポート
+@import add from "lib/math.nerul"
+
+// ワイルドカードインポート
+@import * from "lib/utils.nerul"
+```
+
+`_` プレフィックスの関数はプライベート（インポート不可）。
 
 ### コメント
 
@@ -436,6 +526,9 @@ const Value = union(enum) {
     bool_val: bool,
     null_val: void,
     function: u16,
+    closure: *ClosureHandle,
+    array: *ArrayHandle,
+    map: *MapHandle,
 
     fn isTruthy(self: Value) bool
     fn eql(self: Value, other: Value) bool
@@ -504,12 +597,19 @@ const Value = union(enum) {
 | `0x52` | `jump_if_not` | i32 | 偽ならジャンプ |
 | `0x53` | `call` | u16 + u8 | 関数呼び出し (func_id, argc) |
 | `0x54` | `ret` | - | 関数から復帰 |
-| `0x60` | `make_array` | u16 | 配列生成 (Phase 3 で完成) |
-| `0x61` | `make_map` | u16 | マップ生成 (Phase 3 で完成) |
-| `0x62` | `load_index` | - | インデックスアクセス (Phase 3) |
-| `0x63` | `store_index` | - | インデックス書き込み (Phase 3) |
-| `0x64` | `load_member` | u16 | メンバーアクセス (Phase 3) |
-| `0x65` | `store_member` | u16 | メンバー書き込み (Phase 3) |
+| `0x55` | `call_value` | u8 | スタック上の関数値を呼び出し (argc) |
+| `0x56` | `push_function` | u16 | 関数値をプッシュ (func_id) |
+| `0x57` | `make_closure` | u16 + u16 | クロージャ生成 (func_id, upvalue_count) |
+| `0x58` | `load_upvalue` | u16 | upvalue 読み込み |
+| `0x59` | `store_upvalue` | u16 | upvalue 書き込み |
+| `0x60` | `make_array` | u16 | 配列生成 |
+| `0x61` | `make_map` | u16 | マップ生成 |
+| `0x62` | `load_index` | - | インデックスアクセス |
+| `0x63` | `store_index` | - | インデックス書き込み |
+| `0x64` | `load_member` | u16 | メンバーアクセス |
+| `0x65` | `store_member` | u16 | メンバー書き込み |
+| `0x66` | `call_method` | u16 + u8 | メソッド呼び出し (name_idx, argc) |
+| `0x90` | `call_builtin` | u16 + u8 | 組み込み関数呼び出し (name_idx, argc) |
 | `0x70` | `emit_text` | - | TextDisplay イベント発行、一時停止。stack: `[speaker_or_null, text]` |
 | `0x71` | `emit_speaker` | - | SpeakerChange イベント発行。stack: `[speaker_or_null]` |
 | `0x72` | `emit_wait` | u32 | Wait イベント発行 (ms 即値) |

@@ -53,14 +53,13 @@ More runnable examples live under [`examples/`](examples/README.md).
 ## Features
 
 - **Scenario Layer** (`.neru`) — Text lines, `@speaker`/`@wait`/`@clear`, `@bg`/`@show`/`@bgm`/`@se`/`@transition` with `--key=value` options, `#label` + `@goto`, `#choice` with conditional entries, `@if`/`@elif`/`@else`/`@end`, `@call`/`@eval`, and `{expression}` interpolation
-- **Logic Layer** (`.nerul`) — Expressions, `let`, `fn`, `if`/`else`, `for`/`while`, `break`/`continue`, recursive calls, compound assignments
+- **Logic Layer** (`.nerul`) — Expressions, `let`, `fn`, `if`/`else`, `for`/`while`/`for-in`, `break`/`continue`, recursive calls, compound assignments, arrays, maps, closures, string methods, `@import` modules
 - **Bytecode VM** — Stack-based virtual machine implemented in Zig. Emits engine-independent events (text, choices, effects) instead of executing them directly
 - **Mock Engine** — `neru run --mock` drives a script end-to-end without an engine, auto-acking events and printing them to stdout
 - **Cross-platform** — Linux, macOS, Windows binaries are shipped from CI
 
 ### What's still coming
 
-- Arrays, maps, closures, modules (Phase 3)
 - State management, save/load, macros, i18n (Phase 4)
 - LSP, debugger, formatter (Phase 5)
 
@@ -111,13 +110,27 @@ fn factorial(n) {
 
 let x = factorial(5)  // 120
 
-for i in 0..10 {
-  // loop body
+// Arrays and maps
+let items = ["sword", "shield"]
+items.push("potion")
+let stats = {"hp": 100, "mp": 50}
+
+// For-in iteration
+for item in items {
+  debug.log(item)
 }
 
-while x > 0 {
-  x -= 1
+// Closures
+fn make_adder(x) {
+  fn adder(y) { return x + y }
+  return adder
 }
+let add5 = make_adder(5)
+add5(10)  // 15
+
+// Built-in modules
+let abs_val = math.abs(-42)
+debug.assert(abs_val == 42)
 ```
 
 ## Build from Source
@@ -174,6 +187,19 @@ while (try vm.runUntilEvent()) |event| {
 
 ## Documentation
 
+### User Guide
+
+- [01. Introduction](docs/guide/01-introduction.md)
+- [02. Scenario Layer](docs/guide/02-scenario-layer.md)
+- [03. Logic Layer Basics](docs/guide/03-logic-layer.md)
+- [04. Data Structures](docs/guide/04-data-structures.md)
+- [05. Functions & Closures](docs/guide/05-functions-advanced.md)
+- [06. String Operations](docs/guide/06-string-operations.md)
+- [07. Built-in Modules](docs/guide/07-built-in-modules.md)
+- [08. Module System](docs/guide/08-module-system.md)
+
+### Reference
+
 - [API Reference](docs/api-reference.md)
 - [Language Specification](docs/specification/language-spec.md)
 - [Architecture](docs/specification/architecture.md)
@@ -186,7 +212,7 @@ while (try vm.runUntilEvent()) |event| {
 |---|---|---|
 | 1. Core Foundation | Done | Lexer, Parser, Codegen, VM, CLI |
 | 2. Scenario Layer | Done | Text, speakers, media directives, flow control, conditionals, events |
-| 3. Logic Layer | Planned | Arrays, maps, closures, modules |
+| 3. Logic Layer | Done | Arrays, maps, closures, string ops, builtins, modules |
 | 4. Integration | Planned | State management, save/load, macros, i18n |
 | 5. Developer Tools | Planned | LSP, debugger, formatter |
 
