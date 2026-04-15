@@ -2498,3 +2498,103 @@ test "VM: string inequality" {
     , 0);
     try std.testing.expect(val.bool_val);
 }
+
+// ---- Phase 3.5: Built-in functions ----
+
+test "VM: math.abs positive" {
+    const val = try runAndGetLocal(
+        \\let r = math.abs(-42)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: math.abs float" {
+    const val = try runAndGetLocal(
+        \\let r = math.abs(-3.14)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(f64, 3.14), val.float);
+}
+
+test "VM: math.min" {
+    const val = try runAndGetLocal(
+        \\let r = math.min(10, 3)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: math.max" {
+    const val = try runAndGetLocal(
+        \\let r = math.max(10, 3)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 10), val.int);
+}
+
+test "VM: math.floor" {
+    const val = try runAndGetLocal(
+        \\let r = math.floor(3.7)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: math.ceil" {
+    const val = try runAndGetLocal(
+        \\let r = math.ceil(3.2)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 4), val.int);
+}
+
+test "VM: math.floor int passthrough" {
+    const val = try runAndGetLocal(
+        \\let r = math.floor(5)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 5), val.int);
+}
+
+test "VM: math.random returns int in range" {
+    const val = try runAndGetLocal(
+        \\let r = math.random(1, 10)
+        \\let in_range = r >= 1
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: debug.assert passes" {
+    const val = try runAndGetLocal(
+        \\debug.assert(true)
+        \\let r = 42
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: debug.assert with message fails" {
+    const result = compileAndRun(
+        \\debug.assert(false, "expected true")
+        \\
+    );
+    try std.testing.expectError(error.RuntimeError, result);
+}
+
+test "VM: debug.log returns null" {
+    const val = try runAndGetLocal(
+        \\let r = debug.log("test message")
+        \\
+    , 0);
+    try std.testing.expect(val == .null_val);
+}
+
+test "VM: debug.dump returns null" {
+    const val = try runAndGetLocal(
+        \\let r = debug.dump(42)
+        \\
+    , 0);
+    try std.testing.expect(val == .null_val);
+}
