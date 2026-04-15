@@ -969,13 +969,41 @@ pub const Compiler = struct {
         }
     }
 
+    const builtin_modules = [_][]const u8{ "math", "debug" };
+
+    fn isBuiltinModule(name: []const u8) bool {
+        for (builtin_modules) |m| {
+            if (std.mem.eql(u8, m, name)) return true;
+        }
+        return false;
+    }
+
     fn compileCall(self: *Compiler, expr: ast.CallExpr) !void {
         const callee = self.nodes.getNode(expr.callee);
 
         // Method call: obj.method(args...)
         if (callee == .member_expr) {
             const mem = callee.member_expr;
-            // Push receiver object first
+
+            // Check for built-in module calls: math.abs(x), debug.log(x)
+            const obj_node = self.nodes.getNode(mem.object);
+            if (obj_node == .identifier_expr) {
+                if (isBuiltinModule(obj_node.identifier_expr.name)) {
+                    // Encode as "module.method" in constant pool
+                    const full_name = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{
+                        obj_node.identifier_expr.name, mem.member,
+                    }) catch return error.OutOfMemory;
+                    const name_idx = try self.addStringConstant(full_name);
+                    for (expr.args) |arg| {
+                        try self.compileExpr(arg);
+                    }
+                    try self.emitWithU16(.call_builtin, name_idx);
+                    self.bytecode.append(self.allocator, @intCast(expr.args.len)) catch return error.OutOfMemory;
+                    return;
+                }
+            }
+
+            // Regular method call: obj.method(args...)
             try self.compileExpr(mem.object);
             // Push arguments
             for (expr.args) |arg| {

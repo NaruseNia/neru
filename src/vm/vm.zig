@@ -626,6 +626,17 @@ pub const VM = struct {
                     self.suspended = true;
                 },
 
+                .call_builtin => {
+                    const name_idx = self.readU16();
+                    const argc = self.bytecode[self.ip];
+                    self.ip += 1;
+                    const name = switch (self.constants[name_idx]) {
+                        .string => |s| s,
+                        else => return error.RuntimeError,
+                    };
+                    try self.executeBuiltin(name, argc);
+                },
+
                 .to_str => try self.coerceToString(),
 
                 .halt => {
@@ -990,6 +1001,106 @@ pub const VM = struct {
                 }
             },
             else => return error.TypeError,
+        }
+    }
+
+    fn debugPrintValue(_: *VM, prefix: []const u8, v: Value) void {
+        var buf: [4096]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&buf);
+        const writer = stream.writer();
+        v.formatValue(writer) catch {};
+        const written = stream.getWritten();
+        std.debug.print("{s}{s}\n", .{ prefix, written });
+    }
+
+    fn executeBuiltin(self: *VM, name: []const u8, argc: u8) VMError!void {
+        // math module
+        if (std.mem.eql(u8, name, "math.abs")) {
+            if (argc != 1) return error.ArityMismatch;
+            const v = try self.pop();
+            switch (v) {
+                .int => |i| try self.push(.{ .int = if (i < 0) -i else i }),
+                .float => |f| try self.push(.{ .float = @abs(f) }),
+                else => return error.TypeError,
+            }
+        } else if (std.mem.eql(u8, name, "math.min")) {
+            if (argc != 2) return error.ArityMismatch;
+            const b = try self.pop();
+            const a = try self.pop();
+            const cmp = value_mod.compare(a, b, .lt) catch return error.TypeError;
+            try self.push(if (cmp.bool_val) a else b);
+        } else if (std.mem.eql(u8, name, "math.max")) {
+            if (argc != 2) return error.ArityMismatch;
+            const b = try self.pop();
+            const a = try self.pop();
+            const cmp = value_mod.compare(a, b, .gt) catch return error.TypeError;
+            try self.push(if (cmp.bool_val) a else b);
+        } else if (std.mem.eql(u8, name, "math.floor")) {
+            if (argc != 1) return error.ArityMismatch;
+            const v = try self.pop();
+            switch (v) {
+                .float => |f| try self.push(.{ .int = @intFromFloat(@floor(f)) }),
+                .int => try self.push(v),
+                else => return error.TypeError,
+            }
+        } else if (std.mem.eql(u8, name, "math.ceil")) {
+            if (argc != 1) return error.ArityMismatch;
+            const v = try self.pop();
+            switch (v) {
+                .float => |f| try self.push(.{ .int = @intFromFloat(@ceil(f)) }),
+                .int => try self.push(v),
+                else => return error.TypeError,
+            }
+        } else if (std.mem.eql(u8, name, "math.random")) {
+            if (argc != 2) return error.ArityMismatch;
+            const max_val = try self.pop();
+            const min_val = try self.pop();
+            const min_i = switch (min_val) {
+                .int => |i| i,
+                else => return error.TypeError,
+            };
+            const max_i = switch (max_val) {
+                .int => |i| i,
+                else => return error.TypeError,
+            };
+            if (min_i > max_i) return error.RuntimeError;
+            // Simple deterministic random for now (seed-based in future)
+            // Use a basic LCG seeded from IP to provide some variation
+            const seed: u64 = @intCast(self.ip);
+            const range: u64 = @intCast(max_i - min_i + 1);
+            const rand_val: i64 = min_i + @as(i64, @intCast((seed *% 6364136223846793005 +% 1442695040888963407) % range));
+            try self.push(.{ .int = rand_val });
+        }
+        // debug module
+        else if (std.mem.eql(u8, name, "debug.log")) {
+            if (argc != 1) return error.ArityMismatch;
+            const v = try self.pop();
+            self.debugPrintValue("[debug] ", v);
+            try self.push(.{ .null_val = {} });
+        } else if (std.mem.eql(u8, name, "debug.dump")) {
+            if (argc != 1) return error.ArityMismatch;
+            const v = try self.pop();
+            std.debug.print("[dump] type={s} value=", .{v.typeName()});
+            self.debugPrintValue("", v);
+            try self.push(.{ .null_val = {} });
+        } else if (std.mem.eql(u8, name, "debug.assert")) {
+            if (argc != 1 and argc != 2) return error.ArityMismatch;
+            var msg: []const u8 = "assertion failed";
+            if (argc == 2) {
+                const msg_val = try self.pop();
+                msg = switch (msg_val) {
+                    .string => |s| s,
+                    else => "assertion failed",
+                };
+            }
+            const cond = try self.pop();
+            if (!cond.isTruthy()) {
+                std.debug.print("[assert] {s}\n", .{msg});
+                return error.RuntimeError;
+            }
+            try self.push(.{ .null_val = {} });
+        } else {
+            return error.RuntimeError;
         }
     }
 };
@@ -2386,4 +2497,104 @@ test "VM: string inequality" {
         \\
     , 0);
     try std.testing.expect(val.bool_val);
+}
+
+// ---- Phase 3.5: Built-in functions ----
+
+test "VM: math.abs positive" {
+    const val = try runAndGetLocal(
+        \\let r = math.abs(-42)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: math.abs float" {
+    const val = try runAndGetLocal(
+        \\let r = math.abs(-3.14)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(f64, 3.14), val.float);
+}
+
+test "VM: math.min" {
+    const val = try runAndGetLocal(
+        \\let r = math.min(10, 3)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: math.max" {
+    const val = try runAndGetLocal(
+        \\let r = math.max(10, 3)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 10), val.int);
+}
+
+test "VM: math.floor" {
+    const val = try runAndGetLocal(
+        \\let r = math.floor(3.7)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: math.ceil" {
+    const val = try runAndGetLocal(
+        \\let r = math.ceil(3.2)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 4), val.int);
+}
+
+test "VM: math.floor int passthrough" {
+    const val = try runAndGetLocal(
+        \\let r = math.floor(5)
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 5), val.int);
+}
+
+test "VM: math.random returns int in range" {
+    const val = try runAndGetLocal(
+        \\let r = math.random(1, 10)
+        \\let in_range = r >= 1
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: debug.assert passes" {
+    const val = try runAndGetLocal(
+        \\debug.assert(true)
+        \\let r = 42
+        \\
+    , 0);
+    try std.testing.expectEqual(@as(i64, 42), val.int);
+}
+
+test "VM: debug.assert with message fails" {
+    const result = compileAndRun(
+        \\debug.assert(false, "expected true")
+        \\
+    );
+    try std.testing.expectError(error.RuntimeError, result);
+}
+
+test "VM: debug.log returns null" {
+    const val = try runAndGetLocal(
+        \\let r = debug.log("test message")
+        \\
+    , 0);
+    try std.testing.expect(val == .null_val);
+}
+
+test "VM: debug.dump returns null" {
+    const val = try runAndGetLocal(
+        \\let r = debug.dump(42)
+        \\
+    , 0);
+    try std.testing.expect(val == .null_val);
 }
