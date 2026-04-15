@@ -64,6 +64,9 @@ pub const OpCode = enum(u8) {
     // Coercion
     to_str = 0x80,
 
+    // Built-in module calls
+    call_builtin = 0x90,
+
     // Special
     halt = 0xFF,
 
@@ -78,6 +81,7 @@ pub const OpCode = enum(u8) {
             .call_value => 1,
             .push_function, .load_upvalue, .store_upvalue => 2,
             .make_closure => 4, // func_id: u16, upvalue_count: u16
+            .call_builtin => 3, // name_idx: u16, argc: u8
             .emit_wait => 4,
             .emit_directive => 2,
             .emit_choice => 1,
