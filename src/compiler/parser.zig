@@ -871,7 +871,13 @@ pub const Parser = struct {
                 .span = self.spanFrom(start),
             } });
         }
-        return self.parsePrimary();
+        // Parse primary + postfix chain so that `!a[0]` is `!(a[0])`,
+        // not `(!a)[0]`.
+        var left = try self.parsePrimary();
+        while (self.current.tag == .lparen or self.current.tag == .lbracket or self.current.tag == .dot) {
+            left = try self.parsePostfix(left);
+        }
+        return left;
     }
 
     fn parsePostfix(self: *Parser, left: NodeIndex) ParseError!NodeIndex {
