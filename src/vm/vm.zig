@@ -912,11 +912,79 @@ pub const VM = struct {
                     return error.RuntimeError;
                 }
             },
-            .string => {
+            .string => |str| {
                 if (std.mem.eql(u8, method_name, "len")) {
                     if (argc != 0) return error.ArityMismatch;
-                    const s = try self.pop(); // pop receiver
-                    try self.push(.{ .int = @intCast(s.string.len) });
+                    _ = try self.pop(); // pop receiver
+                    try self.push(.{ .int = @intCast(str.len) });
+                } else if (std.mem.eql(u8, method_name, "upper")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop();
+                    const buf = self.allocator.alloc(u8, str.len) catch return error.RuntimeError;
+                    for (str, 0..) |c, i| {
+                        buf[i] = std.ascii.toUpper(c);
+                    }
+                    self.allocated_strings.append(self.allocator, buf) catch return error.RuntimeError;
+                    try self.push(.{ .string = buf });
+                } else if (std.mem.eql(u8, method_name, "lower")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop();
+                    const buf = self.allocator.alloc(u8, str.len) catch return error.RuntimeError;
+                    for (str, 0..) |c, i| {
+                        buf[i] = std.ascii.toLower(c);
+                    }
+                    self.allocated_strings.append(self.allocator, buf) catch return error.RuntimeError;
+                    try self.push(.{ .string = buf });
+                } else if (std.mem.eql(u8, method_name, "contains")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const needle_val = try self.pop();
+                    _ = try self.pop();
+                    const needle = switch (needle_val) {
+                        .string => |s| s,
+                        else => return error.TypeError,
+                    };
+                    const found = std.mem.indexOf(u8, str, needle) != null;
+                    try self.push(.{ .bool_val = found });
+                } else if (std.mem.eql(u8, method_name, "replace")) {
+                    if (argc != 2) return error.ArityMismatch;
+                    const new_val = try self.pop();
+                    const old_val = try self.pop();
+                    _ = try self.pop();
+                    const old = switch (old_val) {
+                        .string => |s| s,
+                        else => return error.TypeError,
+                    };
+                    const new = switch (new_val) {
+                        .string => |s| s,
+                        else => return error.TypeError,
+                    };
+                    const replaced = std.mem.replaceOwned(u8, self.allocator, str, old, new) catch return error.RuntimeError;
+                    self.allocated_strings.append(self.allocator, replaced) catch return error.RuntimeError;
+                    try self.push(.{ .string = replaced });
+                } else if (std.mem.eql(u8, method_name, "split")) {
+                    if (argc != 1) return error.ArityMismatch;
+                    const sep_val = try self.pop();
+                    _ = try self.pop();
+                    const sep = switch (sep_val) {
+                        .string => |s| s,
+                        else => return error.TypeError,
+                    };
+                    const result_arr = self.allocateArray() catch return error.RuntimeError;
+                    var iter = std.mem.splitSequence(u8, str, sep);
+                    while (iter.next()) |part| {
+                        const part_copy = self.allocator.dupe(u8, part) catch return error.RuntimeError;
+                        self.allocated_strings.append(self.allocator, part_copy) catch return error.RuntimeError;
+                        result_arr.items.append(result_arr.allocator, .{ .string = part_copy }) catch return error.RuntimeError;
+                    }
+                    try self.push(.{ .array = result_arr });
+                } else if (std.mem.eql(u8, method_name, "trim")) {
+                    if (argc != 0) return error.ArityMismatch;
+                    _ = try self.pop();
+                    const trimmed = std.mem.trim(u8, str, " \t\n\r");
+                    // trimmed is a slice of the original — need to copy for ownership safety
+                    const buf = self.allocator.dupe(u8, trimmed) catch return error.RuntimeError;
+                    self.allocated_strings.append(self.allocator, buf) catch return error.RuntimeError;
+                    try self.push(.{ .string = buf });
                 } else {
                     return error.RuntimeError;
                 }
@@ -2188,4 +2256,134 @@ test "VM: while with break and continue" {
         \\
     , 0); // slot 0 = sum
     try std.testing.expectEqual(@as(i64, 23), val.int); // 1+2+3+4+6+7
+}
+
+// ---- Phase 3.4: String operations ----
+// NOTE: Tests for VM-allocated strings (concat, upper, etc.) compare inside the
+// VM and check a bool/int result, because runAndGetLocal's arena is freed before
+// the caller can inspect string pointers.
+
+test "VM: string concatenation" {
+    const val = try runAndGetLocal(
+        \\let c = "hello" + " world"
+        \\let r = c == "hello world"
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string concat length" {
+    const val = try runAndGetLocal(
+        \\let c = "abc" + "def"
+        \\let n = c.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 6), val.int);
+}
+
+test "VM: string len" {
+    const val = try runAndGetLocal(
+        \\let s = "hello"
+        \\let n = s.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 5), val.int);
+}
+
+test "VM: string upper" {
+    const val = try runAndGetLocal(
+        \\let r = "hello".upper() == "HELLO"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string lower" {
+    const val = try runAndGetLocal(
+        \\let r = "HELLO".lower() == "hello"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string contains true" {
+    const val = try runAndGetLocal(
+        \\let r = "hello world".contains("world")
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string contains false" {
+    const val = try runAndGetLocal(
+        \\let r = "hello world".contains("xyz")
+        \\
+    , 0);
+    try std.testing.expect(!val.bool_val);
+}
+
+test "VM: string replace" {
+    const val = try runAndGetLocal(
+        \\let r = "hello world".replace("world", "zig") == "hello zig"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string split count" {
+    const val = try runAndGetLocal(
+        \\let parts = "a,b,c".split(",")
+        \\let count = parts.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: string split element" {
+    const val = try runAndGetLocal(
+        \\let parts = "hello world foo".split(" ")
+        \\let r = parts[1] == "world"
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string trim" {
+    const val = try runAndGetLocal(
+        \\let r = "  hello  ".trim() == "hello"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string comparison lt" {
+    const val = try runAndGetLocal(
+        \\let r = "abc" < "abd"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string comparison gte" {
+    const val = try runAndGetLocal(
+        \\let r = "xyz" >= "abc"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string equality" {
+    const val = try runAndGetLocal(
+        \\let r = "hello" == "hello"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string inequality" {
+    const val = try runAndGetLocal(
+        \\let r = "hello" != "world"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
 }
