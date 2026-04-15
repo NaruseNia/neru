@@ -1795,3 +1795,33 @@ test "error recovery continues parsing" {
     const program = result.nodes.getNode(result.root).program;
     try std.testing.expect(program.stmts.len >= 1);
 }
+
+// ---- Phase 3.6: Module system parser tests ----
+
+test "scenario parser: @import named" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("@import give_item from \"logic/items.nerul\"\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const stmt = getStmt(&result, 0);
+    const imp = stmt.import_directive;
+    try std.testing.expectEqualStrings("give_item", imp.target);
+    try std.testing.expectEqualStrings("logic/items.nerul", imp.filepath);
+}
+
+test "scenario parser: @import wildcard" {
+    const allocator = std.testing.allocator;
+    var result = try parseScenarioSource("@import * from \"logic/game.nerul\"\n", allocator);
+    defer result.nodes.deinit();
+    defer result.diags.deinit();
+    defer allocator.free(result.nodes.getNode(result.root).program.stmts);
+
+    try std.testing.expect(!result.diags.hasErrors());
+    const stmt = getStmt(&result, 0);
+    const imp = stmt.import_directive;
+    try std.testing.expectEqualStrings("*", imp.target);
+    try std.testing.expectEqualStrings("logic/game.nerul", imp.filepath);
+}
