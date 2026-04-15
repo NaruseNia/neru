@@ -2257,3 +2257,133 @@ test "VM: while with break and continue" {
     , 0); // slot 0 = sum
     try std.testing.expectEqual(@as(i64, 23), val.int); // 1+2+3+4+6+7
 }
+
+// ---- Phase 3.4: String operations ----
+// NOTE: Tests for VM-allocated strings (concat, upper, etc.) compare inside the
+// VM and check a bool/int result, because runAndGetLocal's arena is freed before
+// the caller can inspect string pointers.
+
+test "VM: string concatenation" {
+    const val = try runAndGetLocal(
+        \\let c = "hello" + " world"
+        \\let r = c == "hello world"
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string concat length" {
+    const val = try runAndGetLocal(
+        \\let c = "abc" + "def"
+        \\let n = c.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 6), val.int);
+}
+
+test "VM: string len" {
+    const val = try runAndGetLocal(
+        \\let s = "hello"
+        \\let n = s.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 5), val.int);
+}
+
+test "VM: string upper" {
+    const val = try runAndGetLocal(
+        \\let r = "hello".upper() == "HELLO"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string lower" {
+    const val = try runAndGetLocal(
+        \\let r = "HELLO".lower() == "hello"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string contains true" {
+    const val = try runAndGetLocal(
+        \\let r = "hello world".contains("world")
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string contains false" {
+    const val = try runAndGetLocal(
+        \\let r = "hello world".contains("xyz")
+        \\
+    , 0);
+    try std.testing.expect(!val.bool_val);
+}
+
+test "VM: string replace" {
+    const val = try runAndGetLocal(
+        \\let r = "hello world".replace("world", "zig") == "hello zig"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string split count" {
+    const val = try runAndGetLocal(
+        \\let parts = "a,b,c".split(",")
+        \\let count = parts.len()
+        \\
+    , 1);
+    try std.testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "VM: string split element" {
+    const val = try runAndGetLocal(
+        \\let parts = "hello world foo".split(" ")
+        \\let r = parts[1] == "world"
+        \\
+    , 1);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string trim" {
+    const val = try runAndGetLocal(
+        \\let r = "  hello  ".trim() == "hello"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string comparison lt" {
+    const val = try runAndGetLocal(
+        \\let r = "abc" < "abd"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string comparison gte" {
+    const val = try runAndGetLocal(
+        \\let r = "xyz" >= "abc"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string equality" {
+    const val = try runAndGetLocal(
+        \\let r = "hello" == "hello"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
+
+test "VM: string inequality" {
+    const val = try runAndGetLocal(
+        \\let r = "hello" != "world"
+        \\
+    , 0);
+    try std.testing.expect(val.bool_val);
+}
