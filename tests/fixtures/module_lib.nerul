@@ -1,0 +1,12 @@
+// Library module for testing imports
+fn add(a, b) {
+  return a + b
+}
+
+fn multiply(a, b) {
+  return a * b
+}
+
+fn _internal_helper() {
+  return 42
+}

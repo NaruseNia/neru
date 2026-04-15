@@ -1,0 +1,4 @@
+// Main module that imports from module_lib
+@import add from "tests/fixtures/module_lib.nerul"
+
+let result = add(10, 20)

@@ -32,6 +32,7 @@ pub const Node = union(enum) {
     goto_directive: GotoDirective,
     jump_directive: JumpDirective,
     choice_block: ChoiceBlock,
+    import_directive: ImportDirective,
 
     // Expressions
     binary_expr: BinaryExpr,
@@ -68,6 +69,7 @@ pub const Node = union(enum) {
             .goto_directive => |n| n.span,
             .jump_directive => |n| n.span,
             .choice_block => |n| n.span,
+            .import_directive => |n| n.span,
             .binary_expr => |n| n.span,
             .unary_expr => |n| n.span,
             .call_expr => |n| n.span,
@@ -227,6 +229,13 @@ pub const GotoDirective = struct {
 pub const JumpDirective = struct {
     file: []const u8,
     label: ?[]const u8,
+    span: Span,
+};
+
+/// `@import name from "path"` or `@import * from "path"`
+pub const ImportDirective = struct {
+    target: []const u8, // function name or "*" for wildcard
+    filepath: []const u8, // source file path
     span: Span,
 };
 

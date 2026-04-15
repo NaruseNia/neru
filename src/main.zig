@@ -112,7 +112,11 @@ fn compileFile(
     }
 
     // Codegen
+    var import_ctx = neru.compiler.codegen.ImportContext.init(allocator);
+    defer import_ctx.deinit();
     var compiler = Compiler.init(allocator, &nodes, &diags);
+    compiler.source_path = file_path;
+    compiler.import_context = &import_ctx;
     const module = compiler.compile(root) catch {
         try diags.format(file_path, stderr);
         return error.CompileError;
@@ -177,7 +181,11 @@ fn runFile(
     }
 
     // Codegen
+    var import_ctx2 = neru.compiler.codegen.ImportContext.init(allocator);
+    defer import_ctx2.deinit();
     var compiler = Compiler.init(allocator, &nodes, &diags);
+    compiler.source_path = file_path;
+    compiler.import_context = &import_ctx2;
     const module = compiler.compile(root) catch {
         try diags.format(file_path, stderr);
         return error.CompileError;
