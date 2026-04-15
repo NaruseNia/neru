@@ -3,7 +3,7 @@
 // Run from project root:
 //   neru run examples/logic/modules/main.nerul
 
-@import * from "examples/logic/modules/math_lib.nerul"
+@import * from "math_lib.nerul"
 
 let scores = [85, 92, 78, 95, 88]
 
