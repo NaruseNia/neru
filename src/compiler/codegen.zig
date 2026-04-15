@@ -156,6 +156,33 @@ pub const CompiledModule = struct {
     }
 };
 
+// ---- Import context for module system ----
+
+pub const ImportContext = struct {
+    compiling: std.StringHashMapUnmanaged(void),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) ImportContext {
+        return .{
+            .compiling = .{},
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ImportContext) void {
+        self.compiling.deinit(self.allocator);
+    }
+
+    pub fn markCompiling(self: *ImportContext, path: []const u8) !bool {
+        const gop = self.compiling.getOrPut(self.allocator, path) catch return error.OutOfMemory;
+        return gop.found_existing; // true = circular import
+    }
+
+    pub fn unmarkCompiling(self: *ImportContext, path: []const u8) void {
+        _ = self.compiling.remove(path);
+    }
+};
+
 // ---- Local variable tracking ----
 
 const Local = struct {
@@ -219,6 +246,12 @@ pub const Compiler = struct {
     // which the relative offset is measured (usually patch_pos + 4, but
     // for emit_choice offset tables it is the post-operand IP).
     pending_label_jumps: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(LabelPatch)) = .{},
+
+    // Module system: file path of current source (for relative import resolution)
+    source_path: ?[]const u8 = null,
+
+    // Import context: tracks files currently being compiled to detect cycles
+    import_context: ?*ImportContext = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -311,6 +344,7 @@ pub const Compiler = struct {
             .goto_directive => |n| try self.compileGotoDirective(n),
             .jump_directive => |n| try self.compileJumpDirective(n),
             .choice_block => |n| try self.compileChoiceBlock(n),
+            .import_directive => |n| try self.compileImportDirective(n),
             else => {
                 // Expression nodes shouldn't appear at statement level
                 try self.compileExpr(idx);
@@ -386,6 +420,177 @@ pub const Compiler = struct {
         // knows it will not execute at runtime yet.
         self.diagnostics.addWarning(.codegen, d.span, "@jump is not yet implemented; execution will halt here");
         try self.emit(.halt);
+    }
+
+    fn compileImportDirective(self: *Compiler, d: ast.ImportDirective) !void {
+        self.addDebugLine(d.span.start.line);
+
+        // Resolve file path relative to current source
+        const resolved_path = self.resolveImportPath(d.filepath) orelse {
+            self.diagnostics.addError(.codegen, d.span, "cannot resolve import path");
+            return;
+        };
+
+        // Check circular imports
+        if (self.import_context) |ctx| {
+            const is_circular = ctx.markCompiling(resolved_path) catch {
+                self.diagnostics.addError(.codegen, d.span, "import tracking failed");
+                return;
+            };
+            if (is_circular) {
+                self.diagnostics.addError(.codegen, d.span, "circular import detected");
+                return;
+            }
+        }
+
+        // Read and compile the imported file
+        const source = std.fs.cwd().readFileAlloc(self.allocator, resolved_path, 1024 * 1024) catch {
+            self.diagnostics.addError(.codegen, d.span, "cannot read imported file");
+            if (self.import_context) |ctx| ctx.unmarkCompiling(resolved_path);
+            return;
+        };
+
+        const lexer_mod = @import("lexer.zig");
+        const parser_mod = @import("parser.zig");
+        var imp_nodes = ast.NodeStore.init(self.allocator);
+        var imp_lexer = lexer_mod.Lexer.init(source, self.diagnostics, lexer_mod.Mode.fromPath(resolved_path));
+        var imp_parser = parser_mod.Parser.init(self.allocator, &imp_lexer, &imp_nodes, self.diagnostics);
+        const imp_root = imp_parser.parseProgram() catch {
+            if (self.import_context) |ctx| ctx.unmarkCompiling(resolved_path);
+            return;
+        };
+
+        if (self.diagnostics.hasErrors()) {
+            if (self.import_context) |ctx| ctx.unmarkCompiling(resolved_path);
+            return;
+        }
+
+        var imp_compiler = Compiler.init(self.allocator, &imp_nodes, self.diagnostics);
+        imp_compiler.source_path = resolved_path;
+        imp_compiler.import_context = self.import_context;
+        const imp_module = imp_compiler.compile(imp_root) catch {
+            if (self.import_context) |ctx| ctx.unmarkCompiling(resolved_path);
+            return;
+        };
+
+        if (self.import_context) |ctx| ctx.unmarkCompiling(resolved_path);
+
+        if (self.diagnostics.hasErrors()) return;
+
+        // Merge imported functions into current module
+        const is_wildcard = std.mem.eql(u8, d.target, "*");
+
+        // Skip function 0 (__main__) of imported module
+        for (imp_module.functions[1..]) |imp_func| {
+            const fname = imp_module.constants[imp_func.name_idx].string;
+
+            // Skip private functions (starting with _)
+            if (fname.len > 0 and fname[0] == '_') continue;
+
+            // For named import, only import the specified function
+            if (!is_wildcard and !std.mem.eql(u8, fname, d.target)) continue;
+
+            // Copy function bytecode into current module
+            const bytecode_start: u32 = @intCast(self.bytecode.items.len);
+
+            // Emit jump over imported function body
+            const jump_over = try self.emitJump(.jump);
+
+            const new_offset: u32 = @intCast(self.bytecode.items.len);
+
+            // Copy bytecode from imported function
+            const imp_bc_end = self.findFunctionEnd(imp_module, imp_func);
+            self.bytecode.appendSlice(self.allocator, imp_module.bytecode[imp_func.bytecode_offset..imp_bc_end]) catch return error.OutOfMemory;
+
+            // Remap constant references in copied bytecode
+            const const_base: u16 = @intCast(self.constants.items.len);
+            for (imp_module.constants) |c| {
+                self.constants.append(self.allocator, c) catch return error.OutOfMemory;
+            }
+            self.remapConstants(bytecode_start + 5, const_base, imp_module.bytecode[imp_func.bytecode_offset..imp_bc_end]);
+
+            _ = new_offset;
+            self.patchJump(jump_over);
+
+            // Register function
+            const name_idx = try self.addStringConstant(fname);
+            const func_id: u16 = @intCast(self.functions.items.len);
+            self.functions.append(self.allocator, .{
+                .name_idx = name_idx,
+                .arity = imp_func.arity,
+                .bytecode_offset = bytecode_start + 5, // after jump_over
+                .local_count = imp_func.local_count,
+            }) catch return error.OutOfMemory;
+
+            // Store as local variable
+            try self.emitWithU16(.push_function, func_id);
+            const slot = try self.declareLocal(fname);
+            try self.emitWithU16(.store_local, slot);
+        }
+
+        if (!is_wildcard) {
+            // Check if the named function was found
+            var found = false;
+            for (imp_module.functions[1..]) |imp_func| {
+                const fname = imp_module.constants[imp_func.name_idx].string;
+                if (std.mem.eql(u8, fname, d.target)) {
+                    if (fname.len > 0 and fname[0] == '_') {
+                        self.diagnostics.addError(.codegen, d.span, "cannot import private function");
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                self.diagnostics.addError(.codegen, d.span, "function not found in imported module");
+            }
+        }
+    }
+
+    fn resolveImportPath(self: *const Compiler, filepath: []const u8) ?[]const u8 {
+        if (self.source_path) |sp| {
+            // Resolve relative to the directory of the current source file
+            const dir = std.fs.path.dirname(sp) orelse ".";
+            return std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ dir, filepath }) catch return null;
+        }
+        // No source path context — use filepath as-is
+        return filepath;
+    }
+
+    fn findFunctionEnd(self: *const Compiler, module: CompiledModule, func: FunctionEntry) u32 {
+        _ = self;
+        // Find the end of the function's bytecode by looking for the next function
+        // or the end of the module's bytecode
+        var closest_end: u32 = @intCast(module.bytecode.len);
+        for (module.functions) |other| {
+            if (other.bytecode_offset > func.bytecode_offset and other.bytecode_offset < closest_end) {
+                closest_end = other.bytecode_offset;
+            }
+        }
+        return closest_end;
+    }
+
+    fn remapConstants(self: *Compiler, start: u32, const_base: u16, original_bc: []const u8) void {
+        // Walk through copied bytecode and remap push_const operands
+        var ip: u32 = 0;
+        while (ip < original_bc.len) {
+            const op: OpCode = @enumFromInt(original_bc[ip]);
+            ip += 1;
+            switch (op) {
+                .push_const, .load_member, .store_member, .call_method, .call_builtin => {
+                    // These have u16 constant indices that need remapping
+                    const abs_pos = start + ip;
+                    const old_idx = std.mem.readInt(u16, self.bytecode.items[abs_pos..][0..2], .little);
+                    const new_idx = old_idx + const_base;
+                    const bytes = std.mem.toBytes(std.mem.nativeToLittle(u16, new_idx));
+                    @memcpy(self.bytecode.items[abs_pos..][0..2], &bytes);
+                    ip += op.operandSize();
+                },
+                else => {
+                    ip += op.operandSize();
+                },
+            }
+        }
     }
 
     fn compileChoiceBlock(self: *Compiler, d: ast.ChoiceBlock) !void {

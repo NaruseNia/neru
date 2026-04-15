@@ -123,6 +123,7 @@ pub const Parser = struct {
         if (std.mem.eql(u8, name, "bgm_stop")) return self.parseMediaDirective(start, .bgm_stop, .none);
         if (std.mem.eql(u8, name, "se")) return self.parseMediaDirective(start, .se_play, .required);
         if (std.mem.eql(u8, name, "transition")) return self.parseMediaDirective(start, .transition, .required);
+        if (std.mem.eql(u8, name, "import")) return self.parseImportDirective(start);
         self.reportErrorFmt("unknown directive '@{s}'", .{name});
         // Skip to end of line to recover.
         while (self.current.tag != .newline and self.current.tag != .eof) {
@@ -327,6 +328,46 @@ pub const Parser = struct {
         return self.addNode(.{ .jump_directive = .{
             .file = file,
             .label = label,
+            .span = self.spanFrom(start),
+        } });
+    }
+
+    fn parseImportDirective(self: *Parser, start: token_mod.SourceLocation) ParseError!NodeIndex {
+        // @import name from "path"   or   @import * from "path"
+        const target: []const u8 = switch (self.current.tag) {
+            .star => blk: {
+                self.advance();
+                break :blk "*";
+            },
+            .identifier => blk: {
+                const name = self.current.lexeme;
+                self.advance();
+                break :blk name;
+            },
+            else => {
+                self.reportError("expected identifier or '*' after '@import'");
+                return error.UnexpectedToken;
+            },
+        };
+
+        if (self.current.tag != .kw_from) {
+            self.reportError("expected 'from' after import target");
+            return error.UnexpectedToken;
+        }
+        self.advance();
+
+        if (self.current.tag != .string_literal) {
+            self.reportError("expected file path string after 'from'");
+            return error.UnexpectedToken;
+        }
+        const lex = self.current.lexeme;
+        const filepath = if (lex.len >= 2) lex[1 .. lex.len - 1] else lex;
+        self.advance();
+
+        try self.expectNewlineOrEof();
+        return self.addNode(.{ .import_directive = .{
+            .target = target,
+            .filepath = filepath,
             .span = self.spanFrom(start),
         } });
     }
