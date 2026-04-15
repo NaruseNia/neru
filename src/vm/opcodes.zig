@@ -37,6 +37,11 @@ pub const OpCode = enum(u8) {
     jump_if_not = 0x52,
     call = 0x53,
     ret = 0x54,
+    call_value = 0x55,
+    push_function = 0x56,
+    make_closure = 0x57,
+    load_upvalue = 0x58,
+    store_upvalue = 0x59,
 
     // Data structures
     make_array = 0x60,
@@ -70,6 +75,9 @@ pub const OpCode = enum(u8) {
             => 2,
             .jump, .jump_if, .jump_if_not => 4,
             .call, .call_method => 3,
+            .call_value => 1,
+            .push_function, .load_upvalue, .store_upvalue => 2,
+            .make_closure => 4, // func_id: u16, upvalue_count: u16
             .emit_wait => 4,
             .emit_directive => 2,
             .emit_choice => 1,
